@@ -10,7 +10,8 @@ from analysis import (
     get_usd_cad_rate, load_watchlist, save_watchlist,
     add_to_watchlist, remove_from_watchlist,
     load_trade_history, compute_trade_statistics,
-    explain_rating_change, fetch_market_movers_news,
+    explain_rating_change, explain_intraday_change,
+    fetch_market_movers_news,
 )
 
 st.set_page_config(page_title="TalicoTrading", page_icon="\U0001f4ca",
@@ -478,14 +479,16 @@ def render_position_sentiment(analysis):
 def render_rating_history(result):
     history = result.get("rating_history", [])
     intraday = result.get("intraday_scores", [])
+    fetched_at = result.get("fetched_at", "")
+    data_date = result.get("data_date", "")
     if not history and not intraday:
         st.caption("Not enough data for rating history.")
         return
 
     chart_key = _next_key("rh")
+    dropdown_key = _next_key("intra_dd")
     current = result["rating"]
 
-    # Build historical day cards
     all_days = list(history)
     for i, day in enumerate(all_days):
         if day.get("change_explanation") is None and i > 0:
@@ -494,20 +497,28 @@ def render_rating_history(result):
                 "component_scores": day.get("component_scores", {}),
             })
 
-    # Instead of a single "Today" card, show intraday 5-min snapshots
     if intraday:
         for snap in intraday:
             all_days.append({
                 "date": snap["time"],
                 "score": snap["score"],
                 "rating": snap["rating"],
-                "component_scores": {},
-                "change_explanation": None,
+                "component_scores": snap.get("component_scores", {}),
+                "change_explanation": snap.get("change"),
+                "price": snap.get("price"),
+                "rsi": snap.get("rsi"),
+                "key_signals": snap.get("key_signals", []),
                 "is_intraday": True,
             })
     else:
+        if data_date and fetched_at:
+            ts_label = f"{data_date} ({fetched_at})"
+        elif fetched_at:
+            ts_label = f"Fetched {fetched_at}"
+        else:
+            ts_label = "Latest"
         all_days.append({
-            "date": "Now", "score": current["combined_score"],
+            "date": ts_label, "score": current["combined_score"],
             "rating": current["rating"], "component_scores": current["component_scores"],
             "change_explanation": None, "is_intraday": False,
         })
@@ -517,13 +528,9 @@ def render_rating_history(result):
                 "component_scores": current["component_scores"],
             })
 
-    all_days_reversed = list(reversed(all_days))
-
-    # Separate historical from intraday for display
     hist_days = [d for d in all_days if not d.get("is_intraday")]
     intra_days = [d for d in all_days if d.get("is_intraday")]
 
-    # Show historical day cards
     if hist_days:
         st.markdown('<p class="section-header">Rating History — Last 5 Days</p>', unsafe_allow_html=True)
         hist_reversed = list(reversed(hist_days))
@@ -539,23 +546,95 @@ def render_rating_history(result):
                     f"<div style='font-size:0.7em;opacity:0.7'>{day['rating']}</div></div>",
                     unsafe_allow_html=True)
 
-    # Show intraday timeline
     if intra_days:
-        st.markdown('<p class="section-header">Today — Intraday Rating (5-min intervals)</p>', unsafe_allow_html=True)
+        date_part = data_date if data_date else "Today"
+        time_part = f" — fetched {fetched_at}" if fetched_at else ""
+        st.markdown(
+            f'<p class="section-header">{date_part} — Intraday Rating (5-min intervals)'
+            f'<span style="font-weight:400;font-size:0.75em;opacity:0.6">{time_part}</span></p>',
+            unsafe_allow_html=True)
         max_cols = min(len(intra_days), 12)
+        display_snaps = intra_days[-max_cols:]
         intra_cols = st.columns(max_cols)
-        for i, snap in enumerate(intra_days[:max_cols]):
+        for i, snap in enumerate(display_snaps):
             rc = RATING_COLORS.get(snap["rating"], "#757575")
-            is_latest = (i == len(intra_days[:max_cols]) - 1)
+            is_latest = (i == max_cols - 1)
             border = "3px solid rgba(255,255,255,0.8)" if is_latest else "1px solid #333"
+            chg = snap.get("change_explanation")
+            micro_line = ""
+            if chg and isinstance(chg, dict):
+                s = chg["summary"]
+                clr = "#00c853" if "+" in s else "#ff5252" if "-" in s or "fell" in s.lower() else "#aaa"
+                micro_line = (f"<div style='font-size:0.55em;opacity:0.8;margin-top:2px;"
+                              f"color:{clr};white-space:nowrap;overflow:hidden;text-overflow:ellipsis'>"
+                              f"{s}</div>")
             with intra_cols[i]:
                 st.markdown(
                     f"<div style='background:{rc};color:#000;padding:6px 2px;border-radius:8px;"
                     f"text-align:center;font-size:0.7em;border:{border}'>"
                     f"<div style='font-weight:700;font-size:0.8em'>{snap['date']}</div>"
                     f"<div style='font-size:1.2em;font-weight:800'>{snap['score']:.0f}</div>"
-                    f"<div style='font-size:0.65em;opacity:0.7'>{snap['rating']}</div></div>",
+                    f"<div style='font-size:0.65em;opacity:0.7'>{snap['rating']}</div>"
+                    f"{micro_line}</div>",
                     unsafe_allow_html=True)
+
+        # 4-hour history dropdown
+        now_h, now_m = (int(intra_days[-1]["date"].split(":")[0]),
+                        int(intra_days[-1]["date"].split(":")[1]))
+        cutoff_minutes = (now_h * 60 + now_m) - 240
+        recent = []
+        for snap in intra_days:
+            parts = snap["date"].split(":")
+            snap_min = int(parts[0]) * 60 + int(parts[1])
+            if snap_min >= cutoff_minutes:
+                recent.append(snap)
+        if not recent:
+            recent = intra_days
+
+        options = [f"{s['date']}  |  {s['score']:.0f}  {s['rating']}" for s in reversed(recent)]
+        with st.expander(f"Intraday Detail — Last {len(recent)} updates", expanded=False):
+            selected = st.selectbox("Select a snapshot", options, key=dropdown_key,
+                                    label_visibility="collapsed")
+            sel_time = selected.split("|")[0].strip() if selected else ""
+            sel_snap = None
+            for s in recent:
+                if s["date"] == sel_time:
+                    sel_snap = s
+                    break
+
+            if sel_snap:
+                c1, c2, c3, c4 = st.columns(4)
+                rc = RATING_COLORS.get(sel_snap["rating"], "#757575")
+                c1.markdown(f"**Score:** <span style='color:{rc};font-weight:800'>"
+                            f"{sel_snap['score']:.1f}</span>", unsafe_allow_html=True)
+                c2.markdown(f"**Rating:** {sel_snap['rating']}")
+                price = sel_snap.get("price")
+                rsi = sel_snap.get("rsi")
+                if price:
+                    c3.markdown(f"**Price:** ${price:.2f}")
+                if rsi:
+                    c4.markdown(f"**RSI:** {rsi:.1f}")
+
+                chg = sel_snap.get("change_explanation")
+                if chg and isinstance(chg, dict):
+                    st.markdown(f"**Why it changed:** {chg['summary']}")
+                    for d in chg.get("details", []):
+                        color = "#00c853" if d["delta"] > 0 else "#ff5252"
+                        icon = "▲" if d["delta"] > 0 else "▼"
+                        st.markdown(
+                            f"&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:{color}'>{icon}</span> {d['text']}",
+                            unsafe_allow_html=True)
+                elif chg is None:
+                    st.caption("First snapshot — no prior data to compare.")
+                else:
+                    st.caption("No meaningful change from previous snapshot.")
+
+                signals = sel_snap.get("key_signals", [])
+                if signals:
+                    st.markdown("**Key signals at this point:**")
+                    for sig in signals[:4]:
+                        icon = "⚡" if "DIVERGENCE" in sig else "→"
+                        st.markdown(f"&nbsp;&nbsp;{icon} {sig}", unsafe_allow_html=True)
 
     with st.expander("Day-by-Day Breakdown", expanded=False):
         for day in hist_days:
@@ -574,9 +653,11 @@ def render_rating_history(result):
                 st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:{color}'>{icon}</span> {d['text']}",
                             unsafe_allow_html=True)
 
-    # Combined trend chart
-    all_scores = [d["score"] for d in all_days]
-    all_labels = [d["date"] for d in all_days]
+    chart_hist = [d for d in all_days if not d.get("is_intraday")]
+    chart_intra = [d for d in all_days if d.get("is_intraday")][-12:]
+    chart_days = chart_hist + chart_intra
+    all_scores = [d["score"] for d in chart_days]
+    all_labels = [d["date"] for d in chart_days]
     if len(all_scores) >= 2:
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=all_labels, y=all_scores, mode="lines+markers+text",

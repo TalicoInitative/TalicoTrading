@@ -573,7 +573,10 @@ def analyze_news_sentiment(news_articles: list[dict]) -> dict:
 
     scored = []
     for article in news_articles:
-        title = article.get("title", "")
+        if isinstance(article, str):
+            title = article
+        else:
+            title = article.get("title", "")
         if not title:
             continue
         scores = sia.polarity_scores(title)
@@ -586,8 +589,8 @@ def analyze_news_sentiment(news_articles: list[dict]) -> dict:
             sentiment = "neutral"
         scored.append({
             "title": title,
-            "publisher": article.get("publisher", "Unknown"),
-            "link": article.get("link", ""),
+            "publisher": article.get("publisher", "Unknown") if isinstance(article, dict) else "Unknown",
+            "link": article.get("link", "") if isinstance(article, dict) else "",
             "compound_score": round(compound, 3),
             "sentiment": sentiment,
         })
@@ -970,6 +973,53 @@ def explain_rating_change(prev_day, curr_day):
     return {"summary": summary, "details": details}
 
 
+def explain_intraday_change(prev_snap, curr_snap):
+    if prev_snap is None:
+        return None
+    prev_comps = prev_snap.get("component_scores", {})
+    curr_comps = curr_snap.get("component_scores", {})
+    if not prev_comps or not curr_comps:
+        return None
+
+    diff = curr_snap["score"] - prev_snap["score"]
+    deltas = []
+    for key in curr_comps:
+        if key in prev_comps:
+            cs = curr_comps[key]["score"]
+            ps = prev_comps[key]["score"]
+            d = cs - ps
+            if abs(d) >= 1:
+                label = COMPONENT_LABELS.get(key, key.replace("_", " ").title())
+                reasoning = curr_comps[key].get("reasoning", "")
+                deltas.append({"label": label, "delta": d, "reasoning": reasoning,
+                               "prev_score": ps, "curr_score": cs})
+
+    deltas.sort(key=lambda x: abs(x["delta"]), reverse=True)
+
+    if not deltas and abs(diff) < 0.5:
+        return None
+
+    if abs(diff) < 0.5:
+        direction = "Unchanged"
+    elif diff > 0:
+        direction = f"Score +{diff:.1f}"
+    else:
+        direction = f"Score {diff:.1f}"
+
+    parts = [f"{d['label']} {d['delta']:+.0f}" for d in deltas[:3]]
+    summary = f"{direction}: {', '.join(parts)}" if parts else direction
+
+    detail_list = []
+    for d in deltas[:5]:
+        arrow = "improved" if d["delta"] > 0 else "weakened"
+        text = f"{d['label']} {arrow} ({d['prev_score']:.0f}→{d['curr_score']:.0f}, {d['delta']:+.0f})"
+        if d["reasoning"]:
+            text += f" — {d['reasoning']}"
+        detail_list.append({"text": text, "delta": d["delta"], "label": d["label"]})
+
+    return {"summary": summary, "details": detail_list}
+
+
 def compute_rating_history(df, sentiment, lookback_days=5, analyst_data=None, rs_data=None, insider_data=None, info=None):
     history = []
     for offset in range(lookback_days, 0, -1):
@@ -982,7 +1032,7 @@ def compute_rating_history(df, sentiment, lookback_days=5, analyst_data=None, rs
                                rs_data=rs_data, insider_data=insider_data, info=info)
             trade_date = sliced.index[-1]
             history.append({
-                "date": trade_date.strftime("%Y-%m-%d"),
+                "date": trade_date.strftime("%a %b %d").replace(" 0", " ") if hasattr(trade_date, 'strftime') else str(trade_date),
                 "score": r["combined_score"],
                 "rating": r["rating"],
                 "rsi": tech["rsi"],
@@ -1001,12 +1051,12 @@ def compute_rating_history(df, sentiment, lookback_days=5, analyst_data=None, rs
 
 
 def compute_intraday_scores(ticker: str, sentiment, analyst_data=None, rs_data=None,
-                            insider_data=None, info=None) -> list[dict]:
+                            insider_data=None, info=None) -> dict:
     try:
         t = yf.Ticker(ticker)
         df_5m = t.history(period="5d", interval="5m")
         if df_5m is None or df_5m.empty or len(df_5m) < 30:
-            return []
+            return {"snapshots": [], "fetched_at": datetime.now().strftime("%H:%M:%S"), "data_date": ""}
 
         scores = []
         today = date.today()
@@ -1016,17 +1066,27 @@ def compute_intraday_scores(ticker: str, sentiment, analyst_data=None, rs_data=N
             if bar_date == today:
                 today_bars.append(idx)
 
-        if not today_bars:
-            last_date = df_5m.index[-1].date() if hasattr(df_5m.index[-1], 'date') else df_5m.index[-1]
-            for idx in df_5m.index:
+        if len(today_bars) < 5:
+            today_bars = []
+            last_date = None
+            for idx in reversed(df_5m.index):
                 bar_date = idx.date() if hasattr(idx, 'date') else idx
-                if bar_date == last_date:
-                    today_bars.append(idx)
+                if bar_date != today:
+                    last_date = bar_date
+                    break
+            if last_date:
+                for idx in df_5m.index:
+                    bar_date = idx.date() if hasattr(idx, 'date') else idx
+                    if bar_date == last_date:
+                        today_bars.append(idx)
 
         if len(today_bars) < 2:
-            return []
+            return {"snapshots": [], "fetched_at": datetime.now().strftime("%H:%M:%S"), "data_date": ""}
 
-        step = max(1, len(today_bars) // 12)
+        data_date_raw = today_bars[0].date() if hasattr(today_bars[0], 'date') else today
+        data_date_label = data_date_raw.strftime("%a %b %d").replace(" 0", " ") if hasattr(data_date_raw, 'strftime') else str(data_date_raw)
+
+        step = max(1, len(today_bars) // 24)
         sample_indices = list(range(0, len(today_bars), step))
         if (len(today_bars) - 1) not in sample_indices:
             sample_indices.append(len(today_bars) - 1)
@@ -1048,13 +1108,21 @@ def compute_intraday_scores(ticker: str, sentiment, analyst_data=None, rs_data=N
                     "rating": r["rating"],
                     "price": tech["current_price"],
                     "rsi": tech["rsi"],
+                    "component_scores": r["component_scores"],
+                    "key_signals": r["key_signals"],
                 })
             except Exception:
                 continue
 
-        return scores
+        for i in range(1, len(scores)):
+            scores[i]["change"] = explain_intraday_change(scores[i - 1], scores[i])
+        if scores:
+            scores[0]["change"] = None
+
+        fetched_at = datetime.now().strftime("%H:%M:%S")
+        return {"snapshots": scores, "fetched_at": fetched_at, "data_date": data_date_label}
     except Exception:
-        return []
+        return {"snapshots": [], "fetched_at": datetime.now().strftime("%H:%M:%S"), "data_date": ""}
 
 
 def compute_buy_timing(technicals, sentiment, rating_data, earnings, divergences, info, rs_data):
@@ -1423,8 +1491,8 @@ def analyze_ticker(ticker: str, period: str = "6mo") -> dict:
                                              buy_timing, earnings, analyst, insider,
                                              rs_data, divergences, info)
 
-        intraday = compute_intraday_scores(ticker, sentiment, analyst_data=analyst,
-                                            rs_data=rs_data, insider_data=insider, info=info)
+        intraday_result = compute_intraday_scores(ticker, sentiment, analyst_data=analyst,
+                                                    rs_data=rs_data, insider_data=insider, info=info)
 
         return {
             "ticker": ticker.upper(),
@@ -1433,7 +1501,9 @@ def analyze_ticker(ticker: str, period: str = "6mo") -> dict:
             "sentiment": sentiment,
             "rating": rating,
             "rating_history": rating_history,
-            "intraday_scores": intraday,
+            "intraday_scores": intraday_result.get("snapshots", []),
+            "fetched_at": intraday_result.get("fetched_at", datetime.now().strftime("%H:%M:%S")),
+            "data_date": intraday_result.get("data_date", ""),
             "analyst": analyst,
             "insider": insider,
             "earnings": earnings,
