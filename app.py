@@ -10,8 +10,7 @@ from analysis import (
     get_usd_cad_rate, load_watchlist, save_watchlist,
     add_to_watchlist, remove_from_watchlist,
     load_trade_history, compute_trade_statistics,
-    explain_rating_change, explain_intraday_change,
-    fetch_market_movers_news,
+    explain_rating_change, fetch_market_movers_news,
 )
 
 st.set_page_config(page_title="TalicoTrading", page_icon="\U0001f4ca",
@@ -486,7 +485,6 @@ def render_rating_history(result):
         return
 
     chart_key = _next_key("rh")
-    dropdown_key = _next_key("intra_dd")
     current = result["rating"]
 
     all_days = list(history)
@@ -550,91 +548,77 @@ def render_rating_history(result):
         date_part = data_date if data_date else "Today"
         time_part = f" — fetched {fetched_at}" if fetched_at else ""
         st.markdown(
-            f'<p class="section-header">{date_part} — Intraday Rating (5-min intervals)'
+            f'<p class="section-header">{date_part} — Last Hour (5-min intervals)'
             f'<span style="font-weight:400;font-size:0.75em;opacity:0.6">{time_part}</span></p>',
             unsafe_allow_html=True)
-        max_cols = min(len(intra_days), 12)
-        display_snaps = intra_days[-max_cols:]
-        intra_cols = st.columns(max_cols)
+
+        display_snaps = intra_days[-12:]
         for i, snap in enumerate(display_snaps):
             rc = RATING_COLORS.get(snap["rating"], "#757575")
-            is_latest = (i == max_cols - 1)
-            border = "3px solid rgba(255,255,255,0.8)" if is_latest else "1px solid #333"
+            is_latest = (i == len(display_snaps) - 1)
             chg = snap.get("change_explanation")
-            micro_line = ""
-            if chg and isinstance(chg, dict):
-                s = chg["summary"]
-                clr = "#00c853" if "+" in s else "#ff5252" if "-" in s or "fell" in s.lower() else "#aaa"
-                micro_line = (f"<div style='font-size:0.55em;opacity:0.8;margin-top:2px;"
-                              f"color:{clr};white-space:nowrap;overflow:hidden;text-overflow:ellipsis'>"
-                              f"{s}</div>")
-            with intra_cols[i]:
-                st.markdown(
-                    f"<div style='background:{rc};color:#000;padding:6px 2px;border-radius:8px;"
-                    f"text-align:center;font-size:0.7em;border:{border}'>"
-                    f"<div style='font-weight:700;font-size:0.8em'>{snap['date']}</div>"
-                    f"<div style='font-size:1.2em;font-weight:800'>{snap['score']:.0f}</div>"
-                    f"<div style='font-size:0.65em;opacity:0.7'>{snap['rating']}</div>"
-                    f"{micro_line}</div>",
-                    unsafe_allow_html=True)
+            prev_snap = display_snaps[i - 1] if i > 0 else None
+            diff = snap["score"] - prev_snap["score"] if prev_snap else 0
 
-        # 4-hour history dropdown
-        now_h, now_m = (int(intra_days[-1]["date"].split(":")[0]),
-                        int(intra_days[-1]["date"].split(":")[1]))
-        cutoff_minutes = (now_h * 60 + now_m) - 240
-        recent = []
-        for snap in intra_days:
-            parts = snap["date"].split(":")
-            snap_min = int(parts[0]) * 60 + int(parts[1])
-            if snap_min >= cutoff_minutes:
-                recent.append(snap)
-        if not recent:
-            recent = intra_days
+            if is_latest:
+                border_style = "border-left:4px solid #fff"
+            elif diff > 0.5:
+                border_style = "border-left:4px solid #00c853"
+            elif diff < -0.5:
+                border_style = "border-left:4px solid #ff5252"
+            else:
+                border_style = "border-left:4px solid #555"
 
-        options = [f"{s['date']}  |  {s['score']:.0f}  {s['rating']}" for s in reversed(recent)]
-        with st.expander(f"Intraday Detail — Last {len(recent)} updates", expanded=False):
-            selected = st.selectbox("Select a snapshot", options, key=dropdown_key,
-                                    label_visibility="collapsed")
-            sel_time = selected.split("|")[0].strip() if selected else ""
-            sel_snap = None
-            for s in recent:
-                if s["date"] == sel_time:
-                    sel_snap = s
-                    break
-
-            if sel_snap:
-                c1, c2, c3, c4 = st.columns(4)
-                rc = RATING_COLORS.get(sel_snap["rating"], "#757575")
-                c1.markdown(f"**Score:** <span style='color:{rc};font-weight:800'>"
-                            f"{sel_snap['score']:.1f}</span>", unsafe_allow_html=True)
-                c2.markdown(f"**Rating:** {sel_snap['rating']}")
-                price = sel_snap.get("price")
-                rsi = sel_snap.get("rsi")
-                if price:
-                    c3.markdown(f"**Price:** ${price:.2f}")
-                if rsi:
-                    c4.markdown(f"**RSI:** {rsi:.1f}")
-
-                chg = sel_snap.get("change_explanation")
-                if chg and isinstance(chg, dict):
-                    st.markdown(f"**Why it changed:** {chg['summary']}")
-                    for d in chg.get("details", []):
-                        color = "#00c853" if d["delta"] > 0 else "#ff5252"
-                        icon = "▲" if d["delta"] > 0 else "▼"
-                        st.markdown(
-                            f"&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:{color}'>{icon}</span> {d['text']}",
-                            unsafe_allow_html=True)
-                elif chg is None:
-                    st.caption("First snapshot — no prior data to compare.")
+            diff_badge = ""
+            if i > 0:
+                if abs(diff) >= 0.5:
+                    d_color = "#00c853" if diff > 0 else "#ff5252"
+                    d_arrow = "+" if diff > 0 else ""
+                    diff_badge = (f"<span style='color:{d_color};font-weight:700;"
+                                  f"font-size:0.85em;margin-left:8px'>{d_arrow}{diff:.1f}</span>")
                 else:
-                    st.caption("No meaningful change from previous snapshot.")
+                    diff_badge = "<span style='color:#666;font-size:0.8em;margin-left:8px'>—</span>"
 
-                signals = sel_snap.get("key_signals", [])
-                if signals:
-                    st.markdown("**Key signals at this point:**")
-                    for sig in signals[:4]:
-                        icon = "⚡" if "DIVERGENCE" in sig else "→"
-                        st.markdown(f"&nbsp;&nbsp;{icon} {sig}", unsafe_allow_html=True)
+            reason_html = ""
+            if chg and isinstance(chg, dict) and chg.get("details"):
+                reasons = []
+                for d in chg["details"][:2]:
+                    clr = "#4caf50" if d["delta"] > 0 else "#ef5350"
+                    arrow = "▲" if d["delta"] > 0 else "▼"
+                    reasons.append(
+                        f"<span style='color:{clr}'>{arrow}</span> "
+                        f"<strong>{d['label']}</strong> {d['delta']:+.0f}")
+                reason_html = (
+                    f"<div style='font-size:0.78em;color:#aaa;margin-top:3px;padding-left:2px'>"
+                    f"{'&nbsp;&nbsp;·&nbsp;&nbsp;'.join(reasons)}</div>")
+            elif i == 0:
+                reason_html = "<div style='font-size:0.75em;color:#555;margin-top:3px'>Baseline</div>"
+            elif chg is None:
+                reason_html = "<div style='font-size:0.75em;color:#555;margin-top:3px'>No change</div>"
+
+            price_str = f"${snap.get('price', 0):.2f}" if snap.get("price") else ""
+            rsi_str = f"RSI {snap.get('rsi', 0):.0f}" if snap.get("rsi") else ""
+            meta = f"<span style='opacity:0.5;font-size:0.8em'>{price_str}&nbsp;&nbsp;{rsi_str}</span>" if price_str else ""
+
+            latest_tag = " <span style='background:#fff;color:#000;padding:1px 6px;border-radius:4px;font-size:0.7em;font-weight:700;margin-left:6px'>LATEST</span>" if is_latest else ""
+
+            st.markdown(
+                f"<div style='background:#161b22;{border_style};border-radius:6px;"
+                f"padding:8px 12px;margin-bottom:4px'>"
+                f"<div style='display:flex;align-items:center;justify-content:space-between'>"
+                f"<div>"
+                f"<span style='font-weight:700;font-size:0.9em'>{snap['date']}</span>"
+                f"{latest_tag}"
+                f"&nbsp;&nbsp;<span style='background:{rc};color:#000;padding:2px 8px;"
+                f"border-radius:4px;font-weight:700;font-size:0.8em'>"
+                f"{snap['score']:.0f} {snap['rating']}</span>"
+                f"{diff_badge}"
+                f"</div>"
+                f"<div>{meta}</div>"
+                f"</div>"
+                f"{reason_html}"
+                f"</div>",
+                unsafe_allow_html=True)
 
     with st.expander("Day-by-Day Breakdown", expanded=False):
         for day in hist_days:

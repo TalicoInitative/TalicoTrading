@@ -1086,8 +1086,16 @@ def compute_intraday_scores(ticker: str, sentiment, analyst_data=None, rs_data=N
         data_date_raw = today_bars[0].date() if hasattr(today_bars[0], 'date') else today
         data_date_label = data_date_raw.strftime("%a %b %d").replace(" 0", " ") if hasattr(data_date_raw, 'strftime') else str(data_date_raw)
 
-        step = max(1, len(today_bars) // 24)
-        sample_indices = list(range(0, len(today_bars), step))
+        last_bar_min = today_bars[-1].hour * 60 + today_bars[-1].minute if hasattr(today_bars[-1], 'hour') else 960
+        cutoff_min = last_bar_min - 60
+        recent_bars = []
+        for idx in today_bars:
+            bar_min = idx.hour * 60 + idx.minute if hasattr(idx, 'hour') else 0
+            if bar_min >= cutoff_min:
+                recent_bars.append(idx)
+        if len(recent_bars) < 3:
+            recent_bars = today_bars[-12:]
+        sample_indices = [today_bars.index(b) for b in recent_bars]
         if (len(today_bars) - 1) not in sample_indices:
             sample_indices.append(len(today_bars) - 1)
 
