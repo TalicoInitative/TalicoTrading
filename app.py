@@ -450,45 +450,115 @@ def render_news_sentiment(result):
             f"</div>", unsafe_allow_html=True)
 
 
+def render_position_sentiment(analysis):
+    sent = analysis.get("sentiment", {})
+    if not sent.get("has_news"):
+        st.caption("No recent news for sentiment analysis.")
+        return
+
+    sc1, sc2, sc3 = st.columns(3)
+    overall = sent["overall_sentiment"]
+    color = "#00c853" if overall == "bullish" else "#ff5252" if overall == "bearish" else "#ffd600"
+    with sc1:
+        st.markdown(f"**Sentiment:** <span style='color:{color}'><b>{overall.title()}</b></span> "
+                    f"({sent['strength']})", unsafe_allow_html=True)
+    with sc2:
+        st.markdown(f"**Score:** {sent['sentiment_score']:.0f}/100 &nbsp; | &nbsp; "
+                    f"\U0001f7e2 {sent['bullish_count']} &nbsp; ⚪ {sent['neutral_count']} "
+                    f"&nbsp; \U0001f534 {sent['bearish_count']}")
+    with sc3:
+        agreement = analysis.get("sentiment_technical_agreement", "neutral")
+        agr_icon = "\U0001f7e2" if agreement == "aligned" else "\U0001f534" if agreement == "divergent" else "⚪"
+        agr_label = "Aligned" if agreement == "aligned" else "Divergent" if agreement == "divergent" else "Neutral"
+        st.markdown(f"**Tech Agreement:** {agr_icon} {agr_label}")
+
+    st.caption(f"\U0001f4f0 {sent['significance']}")
+
+
 def render_rating_history(result):
     history = result.get("rating_history", [])
-    if not history:
+    intraday = result.get("intraday_scores", [])
+    if not history and not intraday:
         st.caption("Not enough data for rating history.")
         return
 
     chart_key = _next_key("rh")
     current = result["rating"]
-    all_days = list(history) + [{
-        "date": "Today", "score": current["combined_score"],
-        "rating": current["rating"], "component_scores": current["component_scores"],
-        "change_explanation": None,
-    }]
-    if len(history) > 0:
-        today_prev = history[-1]
-        all_days[-1]["change_explanation"] = explain_rating_change(today_prev, {
-            "score": current["combined_score"], "rating": current["rating"],
-            "component_scores": current["component_scores"],
+
+    # Build historical day cards
+    all_days = list(history)
+    for i, day in enumerate(all_days):
+        if day.get("change_explanation") is None and i > 0:
+            all_days[i]["change_explanation"] = explain_rating_change(all_days[i - 1], {
+                "score": day["score"], "rating": day["rating"],
+                "component_scores": day.get("component_scores", {}),
+            })
+
+    # Instead of a single "Today" card, show intraday 5-min snapshots
+    if intraday:
+        for snap in intraday:
+            all_days.append({
+                "date": snap["time"],
+                "score": snap["score"],
+                "rating": snap["rating"],
+                "component_scores": {},
+                "change_explanation": None,
+                "is_intraday": True,
+            })
+    else:
+        all_days.append({
+            "date": "Now", "score": current["combined_score"],
+            "rating": current["rating"], "component_scores": current["component_scores"],
+            "change_explanation": None, "is_intraday": False,
         })
+        if len(history) > 0:
+            all_days[-1]["change_explanation"] = explain_rating_change(history[-1], {
+                "score": current["combined_score"], "rating": current["rating"],
+                "component_scores": current["component_scores"],
+            })
 
     all_days_reversed = list(reversed(all_days))
 
-    st.markdown('<p class="section-header">Rating History — Last 5 Days + Today</p>', unsafe_allow_html=True)
-    cols = st.columns(len(all_days_reversed))
-    for i, day in enumerate(all_days_reversed):
-        rc = RATING_COLORS.get(day["rating"], "#757575")
-        is_today = day["date"] == "Today"
-        border = "3px solid rgba(255,255,255,0.8)" if is_today else "1px solid #333"
-        with cols[i]:
-            st.markdown(
-                f"<div style='background:{rc};color:#000;padding:8px 4px;border-radius:10px;"
-                f"text-align:center;font-size:0.8em;border:{border}'>"
-                f"<div style='font-weight:700;font-size:0.85em'>{day['date'] if not is_today else 'Today'}</div>"
-                f"<div style='font-size:1.3em;font-weight:800'>{day['score']:.0f}</div>"
-                f"<div style='font-size:0.7em;opacity:0.7'>{day['rating']}</div></div>",
-                unsafe_allow_html=True)
+    # Separate historical from intraday for display
+    hist_days = [d for d in all_days if not d.get("is_intraday")]
+    intra_days = [d for d in all_days if d.get("is_intraday")]
+
+    # Show historical day cards
+    if hist_days:
+        st.markdown('<p class="section-header">Rating History — Last 5 Days</p>', unsafe_allow_html=True)
+        hist_reversed = list(reversed(hist_days))
+        cols = st.columns(len(hist_reversed))
+        for i, day in enumerate(hist_reversed):
+            rc = RATING_COLORS.get(day["rating"], "#757575")
+            with cols[i]:
+                st.markdown(
+                    f"<div style='background:{rc};color:#000;padding:8px 4px;border-radius:10px;"
+                    f"text-align:center;font-size:0.8em;border:1px solid #333'>"
+                    f"<div style='font-weight:700;font-size:0.85em'>{day['date']}</div>"
+                    f"<div style='font-size:1.3em;font-weight:800'>{day['score']:.0f}</div>"
+                    f"<div style='font-size:0.7em;opacity:0.7'>{day['rating']}</div></div>",
+                    unsafe_allow_html=True)
+
+    # Show intraday timeline
+    if intra_days:
+        st.markdown('<p class="section-header">Today — Intraday Rating (5-min intervals)</p>', unsafe_allow_html=True)
+        max_cols = min(len(intra_days), 12)
+        intra_cols = st.columns(max_cols)
+        for i, snap in enumerate(intra_days[:max_cols]):
+            rc = RATING_COLORS.get(snap["rating"], "#757575")
+            is_latest = (i == len(intra_days[:max_cols]) - 1)
+            border = "3px solid rgba(255,255,255,0.8)" if is_latest else "1px solid #333"
+            with intra_cols[i]:
+                st.markdown(
+                    f"<div style='background:{rc};color:#000;padding:6px 2px;border-radius:8px;"
+                    f"text-align:center;font-size:0.7em;border:{border}'>"
+                    f"<div style='font-weight:700;font-size:0.8em'>{snap['date']}</div>"
+                    f"<div style='font-size:1.2em;font-weight:800'>{snap['score']:.0f}</div>"
+                    f"<div style='font-size:0.65em;opacity:0.7'>{snap['rating']}</div></div>",
+                    unsafe_allow_html=True)
 
     with st.expander("Day-by-Day Breakdown", expanded=False):
-        for day in all_days:
+        for day in hist_days:
             expl = day.get("change_explanation")
             if expl is None:
                 continue
@@ -504,17 +574,18 @@ def render_rating_history(result):
                 st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:{color}'>{icon}</span> {d['text']}",
                             unsafe_allow_html=True)
 
-    if len(all_days) >= 2:
-        scores = [d["score"] for d in all_days]
-        dates = [d["date"] for d in all_days]
+    # Combined trend chart
+    all_scores = [d["score"] for d in all_days]
+    all_labels = [d["date"] for d in all_days]
+    if len(all_scores) >= 2:
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=dates, y=scores, mode="lines+markers+text",
-                                  text=[f"{s:.0f}" for s in scores], textposition="top center",
-                                  line=dict(color="#42a5f5", width=3), marker=dict(size=10)))
+        fig.add_trace(go.Scatter(x=all_labels, y=all_scores, mode="lines+markers+text",
+                                  text=[f"{s:.0f}" for s in all_scores], textposition="top center",
+                                  line=dict(color="#42a5f5", width=3), marker=dict(size=8)))
         fig.add_hline(y=80, line_dash="dash", line_color="#00c853", opacity=0.3)
         fig.add_hline(y=65, line_dash="dash", line_color="#69f0ae", opacity=0.3)
         fig.add_hline(y=45, line_dash="dash", line_color="#ffd600", opacity=0.2)
-        fig.update_layout(template="plotly_dark", height=200,
+        fig.update_layout(template="plotly_dark", height=220,
                           yaxis=dict(range=[0, 105], title="Score"),
                           margin=dict(l=50, r=50, t=10, b=30), showlegend=False)
         st.plotly_chart(fig, use_container_width=True, key=chart_key)
@@ -839,9 +910,9 @@ with st.sidebar:
 # ── Main ──
 st.caption("⚠️ Informational and educational only. Not financial advice. Always do your own research.")
 
-tab_analyze, tab_watchlist, tab_positions, tab_movers, tab_screener, tab_history = st.tabs(
+tab_analyze, tab_watchlist, tab_positions, tab_movers, tab_screener, tab_history, tab_education = st.tabs(
     ["\U0001f50d Analyze", "\U0001f4cb Watchlist", "\U0001f4bc Positions",
-     "\U0001f525 Movers", "\U0001f4e1 Screener", "\U0001f4ca History"])
+     "\U0001f525 Movers", "\U0001f4e1 Screener", "\U0001f4ca History", "\U0001f393 Education"])
 
 
 # === ANALYZE ===
@@ -953,6 +1024,33 @@ with tab_watchlist:
                 arr = trend_arrow(hist, rating["combined_score"])
                 rc = RATING_COLORS.get(rating["rating"], "#757575")
                 tc = TIMING_COLORS.get(bt.get("timing", ""), "#757575")
+                agr = r.get("sentiment_technical_agreement", "neutral")
+
+                # "What You Might Be Missing" insights
+                insights = []
+                if tech["rsi"] < 30 and rating["combined_score"] < 50:
+                    insights.append("\U0001f4a1 RSI oversold but rating is bearish — possible value trap or bottom-fishing opportunity. Wait for MACD confirmation.")
+                elif tech["rsi"] > 70 and rating["combined_score"] > 65:
+                    insights.append("\U0001f4a1 RSI overbought while rating is bullish — momentum is strong but entry risk is elevated. Consider waiting for a pullback.")
+                if agr == "divergent":
+                    insights.append("\U0001f4a1 Sentiment and technicals disagree — dig deeper. Is the market pricing in something the charts haven't shown yet?")
+                wl_earnings = r.get("earnings", {})
+                if wl_earnings.get("has_date") and wl_earnings.get("in_swing_window"):
+                    eps_hint = f" EPS est: ${wl_earnings['eps_estimate']:.2f}." if wl_earnings.get("eps_estimate") is not None else ""
+                    track_hint = ""
+                    if wl_earnings.get("history"):
+                        track_hint = f" Last {len(wl_earnings['history'])}Q: {wl_earnings['beat_count']} beat, {wl_earnings['miss_count']} miss (avg surprise {wl_earnings.get('avg_surprise_pct', 0):+.1f}%)."
+                    insights.append(f"\U0001f4a1 Earnings in {wl_earnings['days_until']} days — this changes the risk profile.{eps_hint}{track_hint} Decide before the event, not during it.")
+                if tech["support_levels"] and tech["current_price"] > 0:
+                    nearest_sup = tech["support_levels"][0]
+                    sup_dist = ((tech["current_price"] - nearest_sup) / tech["current_price"]) * 100
+                    if sup_dist < 2:
+                        insights.append("\U0001f4a1 Price is very close to support — a bounce here could be a strong entry, but a break below means exit fast.")
+                if tech["resistance_levels"] and tech["current_price"] > 0:
+                    nearest_res = tech["resistance_levels"][0]
+                    res_dist = ((nearest_res - tech["current_price"]) / tech["current_price"]) * 100
+                    if res_dist < 2:
+                        insights.append("\U0001f4a1 Price pressing against resistance — a breakout above could accelerate gains, but failure here means rejection.")
 
                 label = (f"{r['ticker']} — {bt.get('timing', '?')} | "
                          f"{rating['rating']}{arr} ({rating['combined_score']:.0f}/100)")
@@ -982,10 +1080,18 @@ with tab_watchlist:
                     qm1.metric("RSI", f"{tech['rsi']:.0f}",
                                "Oversold" if tech["rsi"] < 30 else "Overbought" if tech["rsi"] > 70 else "Normal")
                     qm2.metric("Trend", tech['trend'].title())
-                    qm3.metric("Vol", f"{tech['vol_ratio']:.1f}x")
-                    qm4.metric("5d", f"{tech.get('ret_5d', 0):+.1f}%")
-                    agr = r.get("sentiment_technical_agreement", "neutral")
-                    qm5.metric("Agreement", agr.title())
+                    qm3.metric("Vol", f"{tech['vol_ratio']:.1f}x",
+                               "Above avg" if tech["vol_ratio"] > 1.2 else "Below avg" if tech["vol_ratio"] < 0.8 else "Avg")
+                    trail = score_trail(r.get("rating_history", []), rating["combined_score"])
+                    qm4.metric("5-Day", trail.split(" → ")[-1] if trail else "—",
+                               f"from {trail.split(' → ')[0]}" if " → " in trail else "")
+                    qm5.metric("MACD", f"{tech['macd_hist']:.4f}",
+                               "Expanding" if abs(tech["macd_hist"]) > abs(tech["macd_hist_prev"]) else "Contracting")
+
+                    # Sentiment panel
+                    st.markdown("---")
+                    st.markdown('<p class="section-header">Sentiment</p>', unsafe_allow_html=True)
+                    render_position_sentiment(r)
 
                     # Written summary
                     st.markdown("---")
@@ -1002,6 +1108,20 @@ with tab_watchlist:
                         for sig in wa.get("bear_signals", [])[:4]:
                             st.markdown(f"<div style='font-size:0.85em;padding:3px 0'>• {sig}</div>", unsafe_allow_html=True)
 
+                    # What You Might Be Missing
+                    if insights:
+                        st.markdown("---")
+                        st.markdown('<p class="section-header">What You Might Be Missing</p>', unsafe_allow_html=True)
+                        for ins in insights:
+                            st.markdown(ins)
+
+                    # Key Signals
+                    st.markdown("---")
+                    st.markdown('<p class="section-header">Key Signals</p>', unsafe_allow_html=True)
+                    for signal in rating["key_signals"]:
+                        icon = "⚡" if "DIVERGENCE" in signal else "→"
+                        st.write(f"{icon} {signal}")
+
                     # Risks + Better entry
                     if wa.get("risks"):
                         st.markdown('<p class="section-header">⚠️ Risks</p>', unsafe_allow_html=True)
@@ -1012,14 +1132,6 @@ with tab_watchlist:
                         st.markdown('<p class="section-header">\U0001f4a1 Better Entry</p>', unsafe_allow_html=True)
                         for tip in bt["better_entry"][:2]:
                             st.markdown(f"<div style='font-size:0.85em'>• {tip}</div>", unsafe_allow_html=True)
-
-                    # News sentiment summary
-                    st.markdown("---")
-                    sent_c = "#00c853" if sent["overall_sentiment"] == "bullish" else "#ff5252" if sent["overall_sentiment"] == "bearish" else "#ffd600"
-                    st.markdown(f"**Sentiment:** <span style='color:{sent_c}'>{sent['overall_sentiment'].title()}</span> "
-                                f"({sent.get('strength', 'none')}) — "
-                                f"\U0001f7e2 {sent['bullish_count']} ⚪ {sent['neutral_count']} \U0001f534 {sent['bearish_count']}",
-                                unsafe_allow_html=True)
 
                     # Support/Resistance
                     sr1, sr2 = st.columns(2)
@@ -1036,6 +1148,10 @@ with tab_watchlist:
 
                     # Rating history
                     render_rating_history(r)
+
+                    # View Full Analysis
+                    with st.expander("View Full Analysis", expanded=False):
+                        render_analysis(r)
 
             if error_results:
                 st.divider()
@@ -1165,26 +1281,52 @@ with tab_positions:
                     dm5.metric("R/R", "N/A")
 
                 if not a.get("error"):
+                    st.markdown("---")
+                    st.markdown('<p class="section-header">Current Sentiment</p>', unsafe_allow_html=True)
+                    render_position_sentiment(a)
+
                     sent = a.get("sentiment", {})
-                    if sent.get("has_news"):
-                        sc = "#00c853" if sent["overall_sentiment"] == "bullish" else "#ff5252" if sent["overall_sentiment"] == "bearish" else "#ffd600"
-                        st.markdown(f"**Sentiment:** <span style='color:{sc}'>{sent['overall_sentiment'].title()}</span> "
-                                    f"({sent.get('strength', '')}) — {sent['significance'][:120]}",
-                                    unsafe_allow_html=True)
                     entry_sent = pos.get("entry_sentiment_score")
                     if entry_sent is not None and sent.get("has_news"):
                         now_sent = sent["sentiment_score"]
                         shift = now_sent - entry_sent
                         if abs(shift) > 5:
                             shift_c = "#00c853" if shift > 0 else "#ff5252"
-                            st.markdown(f"**Sentiment Shift:** <span style='color:{shift_c}'>"
-                                        f"{entry_sent:.0f} → {now_sent:.0f} ({shift:+.0f})</span>",
+                            shift_dir = "improved" if shift > 0 else "deteriorated"
+                            st.markdown(f"**Sentiment Shift Since Entry:** "
+                                        f"<span style='color:{shift_c};font-weight:bold'>"
+                                        f"{entry_sent:.0f} → {now_sent:.0f} ({shift:+.0f}) — "
+                                        f"Sentiment has {shift_dir}</span>",
                                         unsafe_allow_html=True)
 
                     earnings = a.get("earnings", {})
                     if earnings.get("has_date") and earnings.get("in_swing_window"):
                         eps_str = f" | EPS Est: ${earnings['eps_estimate']:.2f}" if earnings.get("eps_estimate") is not None else ""
-                        st.warning(f"⚠️ Earnings in {earnings['days_until']} days ({earnings['date_str']}){eps_str}")
+                        track = ""
+                        if earnings.get("history"):
+                            track = f" | Track: {earnings['beat_count']} beat / {earnings['miss_count']} miss (avg {earnings.get('avg_surprise_pct', 0):+.1f}%)"
+                        st.warning(f"⚠️ Earnings in {earnings['days_until']} days ({earnings['date_str']}){eps_str}{track}")
+
+                if not a.get("error"):
+                    tech_pos = a["technicals"]
+                    st.markdown("---")
+                    lv1, lv2 = st.columns(2)
+                    with lv1:
+                        if tech_pos["support_levels"]:
+                            ns = tech_pos["support_levels"][0]
+                            sd = round(((tech_pos["current_price"] - ns) / tech_pos["current_price"]) * 100, 1)
+                            st.markdown(f"**Nearest Support:** C${usd_to_cad(ns)} ({sd}% below)")
+                        else:
+                            st.markdown("**Nearest Support:** none detected")
+                    with lv2:
+                        if tech_pos["resistance_levels"]:
+                            nr = tech_pos["resistance_levels"][0]
+                            rd = round(((nr - tech_pos["current_price"]) / tech_pos["current_price"]) * 100, 1)
+                            st.markdown(f"**Nearest Resistance:** C${usd_to_cad(nr)} ({rd}% above)")
+                        else:
+                            st.markdown("**Nearest Resistance:** none detected")
+
+                    render_rating_history(a)
 
                 st.markdown("---")
                 st.markdown('<p class="section-header">Guidance</p>', unsafe_allow_html=True)
@@ -1531,3 +1673,240 @@ with tab_history:
         st.dataframe(pd.DataFrame(hist_rows), hide_index=True, use_container_width=True)
         st.download_button("Download Trade History", pd.DataFrame(hist_rows).to_csv(index=False),
                            "trade_history.csv", "text/csv")
+
+
+# === EDUCATION ===
+with tab_education:
+    st.markdown("#### \U0001f393 Trading Indicators — Education")
+    st.caption("Learn what each indicator means, how to read it, and how it applies to swing trading.")
+
+    with st.expander("RSI — Relative Strength Index", expanded=False):
+        st.markdown("""
+**What it is:** RSI measures the speed and magnitude of recent price changes on a 0-100 scale.
+It compares the average gain vs average loss over 14 periods.
+
+**How to read it:**
+- **Below 30 = Oversold.** The stock has been sold off heavily. This doesn't mean "buy immediately" — it means selling pressure may be exhausted. Look for a bounce confirmation (RSI turning back up from below 30).
+- **30-50 = Bearish-leaning neutral.** More selling than buying recently, but no extreme.
+- **50-70 = Bullish-leaning neutral.** More buying than selling. Healthy uptrends often stay in this range.
+- **Above 70 = Overbought.** The stock has run hard. Doesn't mean "sell now" — strong stocks can stay overbought for weeks. But fresh entries here carry pullback risk.
+
+**For swing trading:**
+- Best entries: RSI 30-45 with price at support and MACD turning bullish.
+- Risky entries: RSI above 70 after a 5+ day run.
+- RSI **direction** matters as much as level — RSI 45 and rising is better than RSI 55 and falling.
+""")
+
+    with st.expander("MACD — Moving Average Convergence Divergence", expanded=False):
+        st.markdown("""
+**What it is:** MACD tracks the relationship between two moving averages (12-day EMA and 26-day EMA).
+The MACD line is the difference between them. The signal line is a 9-day EMA of the MACD line.
+The histogram shows the gap between MACD and signal.
+
+**How to read it:**
+- **Bullish crossover:** MACD crosses above signal line — momentum shifting positive. This is one of the most reliable swing entry signals.
+- **Bearish crossover:** MACD crosses below signal line — momentum shifting negative. Consider tightening stops or exiting.
+- **Histogram expanding (positive):** Bullish momentum is building.
+- **Histogram contracting:** Momentum is fading — the current move may be running out of steam.
+
+**For swing trading:**
+- A bullish MACD crossover combined with RSI below 50 = high-probability entry.
+- A bearish crossover while you're in a position = warning sign. Don't ignore it.
+- The histogram is an early warning system — it starts contracting before the crossover happens.
+""")
+
+    with st.expander("Moving Averages (SMA 20, 50, 200 & EMA 12, 26)", expanded=False):
+        st.markdown("""
+**What they are:** Moving averages smooth out price data to show the underlying trend.
+SMA = Simple Moving Average (equal weight). EMA = Exponential Moving Average (recent data weighted more).
+
+**Key levels:**
+- **SMA 20:** Short-term trend. In an uptrend, price bounces off SMA20 regularly — these bounces are swing entry points.
+- **SMA 50:** Medium-term trend. A break below SMA50 in an uptrend is a warning.
+- **SMA 200:** Long-term trend. The "line in the sand." Price above 200 = bull market for the stock.
+
+**How to read alignment:**
+- **Price > SMA20 > SMA50 > SMA200:** Strong bullish alignment. Best environment for buying.
+- **Price < SMA20 < SMA50 < SMA200:** Strong bearish alignment. Avoid longs.
+- **Mixed (price above some, below others):** Transitional — wait for clarity.
+
+**For swing trading:**
+- Buy when price pulls back to SMA20 in an uptrend (20-day MA bounce).
+- Avoid buying when price is far above SMA20 (more than 5-8%) — overextended.
+- SMA50 is the "do or die" level — if price breaks below it, the trend may be changing.
+""")
+
+    with st.expander("Bollinger Bands", expanded=False):
+        st.markdown("""
+**What they are:** Bollinger Bands are a volatility envelope around the 20-day SMA.
+Upper band = SMA20 + 2 standard deviations. Lower band = SMA20 - 2 standard deviations.
+
+**How to read them:**
+- **Price near lower band:** Stock is statistically cheap relative to recent range. Potential bounce zone.
+- **Price near upper band:** Stock is stretched to the upside. Pullback is likely.
+- **Bands squeezing (getting narrow):** Volatility is compressing — a big move is coming, but direction is uncertain.
+- **Bands expanding:** A breakout is in progress. If price is riding the upper band, that's strong momentum.
+
+**For swing trading:**
+- Bounces off the lower band in an overall uptrend = high-probability entries.
+- Price riding the upper band = don't short it, but don't chase it either.
+- A "Bollinger squeeze" followed by a breakout with volume = powerful signal.
+""")
+
+    with st.expander("Volume & Volume Ratio", expanded=False):
+        st.markdown("""
+**What it is:** Volume is the number of shares traded. Volume ratio compares today's volume to the 20-day average.
+
+**How to read it:**
+- **High volume on up day (1.3x+):** Buyers are stepping in with conviction. Confirms the move.
+- **High volume on down day (1.3x+):** Sellers are dumping. Real selling pressure, not just noise.
+- **Low volume on up day:** The rally lacks conviction. May not sustain.
+- **Low volume on down day:** Sellers aren't committed. The dip may be a buying opportunity.
+
+**For swing trading:**
+- The ideal entry: price at support + low RSI + increasing volume as price turns up.
+- Volume confirms breakouts — a breakout on 2x+ volume is real. A breakout on low volume is suspicious.
+- Volume dries up at bottoms — watch for volume to pick up as a sign the bottom is in.
+""")
+
+    with st.expander("ATR — Average True Range (Volatility)", expanded=False):
+        st.markdown("""
+**What it is:** ATR measures the average daily price range over 14 days. It tells you how much a stock typically moves in a day.
+
+**How to use it:**
+- **Stop-loss placement:** A common approach is entry price minus 2x ATR. This gives the stock room to breathe without getting stopped out by normal noise.
+- **Target placement:** Entry price plus 3x ATR gives a 3:1 reward-to-risk ratio.
+- **Trailing stop:** Current price minus 1.5x ATR — tighter for protecting profits.
+- **Position sizing:** Higher ATR = more volatile = use smaller position size.
+
+**For swing trading:**
+- ATR as % of price tells you volatility: below 2% = low vol, 2-4% = normal, above 4% = high vol.
+- High-ATR stocks offer bigger swings but need wider stops.
+- Low-ATR stocks are safer but won't move as much in your 1-3 week window.
+""")
+
+    with st.expander("Support & Resistance", expanded=False):
+        st.markdown("""
+**What they are:** Support is a price level where buyers have historically stepped in. Resistance is where sellers have appeared.
+
+**How to identify them:**
+- Previous swing lows = support. Previous swing highs = resistance.
+- The more times a level is tested, the stronger it is.
+- When support breaks, it becomes resistance (and vice versa).
+
+**For swing trading:**
+- **Buying near support** gives you a tight stop (just below the support level) and good risk/reward.
+- **Buying into resistance** is risky — the stock needs to break through, or you're stuck.
+- The best entries: price bouncing off support with RSI turning up and volume increasing.
+- **Distance from support matters:** if you're 8%+ above support, your stop-loss will be wide = poor risk/reward.
+""")
+
+    with st.expander("Divergences (RSI & MACD)", expanded=False):
+        st.markdown("""
+**What they are:** A divergence occurs when price moves one direction but the indicator moves the opposite direction.
+
+**Types:**
+- **Bullish divergence:** Price makes a lower low, but RSI/MACD makes a higher low. Selling momentum is weakening even though price is still falling. Often signals a bottom.
+- **Bearish divergence:** Price makes a higher high, but RSI/MACD makes a lower high. Buying momentum is fading even though price is still rising. Often signals a top.
+
+**For swing trading:**
+- Divergences are rare but high-conviction signals. When the rating shows a divergence modifier (+10 or -10), pay attention.
+- Bullish divergences at support = one of the strongest buy setups in technical analysis.
+- Bearish divergences at resistance = strong warning even if the stock "looks good."
+- Not all divergences play out — wait for confirmation (MACD crossover, price breaking above resistance).
+""")
+
+    with st.expander("Relative Strength vs SPY", expanded=False):
+        st.markdown("""
+**What it is:** Compares a stock's recent performance (20-day return) against the S&P 500 (SPY).
+
+**How to read it:**
+- **Outperforming SPY by 5%+:** The stock has strong momentum relative to the market. Institutional money may be flowing in.
+- **In line with SPY (within 2%):** The stock is moving with the market. Nothing special.
+- **Underperforming SPY by 5%+:** The stock is lagging. There may be a stock-specific problem.
+
+**For swing trading:**
+- Buy stocks that are outperforming the market — "leaders lead."
+- Avoid stocks that are significantly underperforming unless you see a clear catalyst for reversal.
+- In a market pullback, stocks with high relative strength tend to bounce first and hardest.
+""")
+
+    with st.expander("Analyst Targets & Insider Activity", expanded=False):
+        st.markdown("""
+**Analyst Targets:**
+- Analyst price targets represent where Wall Street analysts think the stock is headed.
+- **Upside > 20%:** Analysts see significant value. This is a bullish signal, though analysts can be wrong.
+- **Downside > 10%:** Analysts think the stock is overvalued. Caution warranted.
+- **Few analysts (< 3):** The target is less reliable — small sample size.
+
+**Insider Activity:**
+- Insider buying (executives buying their own stock with personal money) is one of the most reliable bullish signals.
+- Insider selling is less meaningful — executives sell for many non-bearish reasons (taxes, diversification, planned sales).
+- **Net buying > $1M in 90 days:** Very bullish. Insiders are putting real money where their mouth is.
+- **Net selling > $1M:** Worth noting but not automatically bearish.
+""")
+
+    with st.expander("News Sentiment & Agreement", expanded=False):
+        st.markdown("""
+**What it is:** Our sentiment engine scores recent news headlines using VADER sentiment analysis.
+Each headline gets a -1 to +1 score. The overall sentiment score (0-100) summarizes the recent news flow.
+
+**Strength levels:**
+- **Strong:** 5+ articles with average sentiment above 0.3 — there's a real narrative driving sentiment.
+- **Moderate:** 3+ articles or moderate sentiment scores — some signal but not overwhelming.
+- **Weak:** Few articles or low sentiment scores — noise, not signal.
+
+**Sentiment-Technical Agreement:**
+- **Aligned:** Both sentiment and technicals point the same direction. This is a "high conviction" setup.
+- **Divergent:** Sentiment says one thing, technicals say another. Dig deeper — one of them is wrong.
+- **Neutral:** One or both are neutral. Sentiment isn't a factor.
+
+**For swing trading:**
+- Sentiment alone is a weak signal — it's most powerful when it confirms what the chart already shows.
+- Sudden sentiment shifts (from bullish to bearish) can precede price moves. Watch for sentiment deterioration in your positions.
+""")
+
+    with st.expander("How the Rating System Works", expanded=False):
+        st.markdown("""
+**The TalicoTrading rating combines 9 components into a single 0-100 score:**
+
+| Component | Weight | What It Measures |
+|-----------|--------|------------------|
+| MA Alignment | 18% | Price position vs moving averages |
+| RSI | 14% | Momentum and overbought/oversold |
+| MACD | 14% | Trend momentum and crossovers |
+| Analyst Target | 12% | Upside to Wall Street consensus |
+| Relative Strength | 12% | Performance vs S&P 500 |
+| Sentiment | 10% | News headline sentiment |
+| Volume | 8% | Volume confirmation of moves |
+| Bollinger Bands | 7% | Mean reversion positioning |
+| Insider Activity | 5% | Executive buying/selling |
+
+**Plus a divergence modifier:** +10 for bullish divergence, -10 for bearish. Applied after scoring.
+
+**Rating labels:**
+- **Strong Buy (80+):** Multiple strong signals aligned. High-probability entry.
+- **Buy (65-79):** More bullish than bearish signals. Good setups.
+- **Neutral (45-64):** Mixed signals. Wait for clarity.
+- **Sell (25-44):** More bearish than bullish. Avoid new entries.
+- **Strong Sell (below 25):** Multiple strong sell signals. Exit existing positions.
+
+**The rating is mechanical, not a recommendation.** It summarizes the data. You should still look at the chart, check the catalyst calendar, and decide if the risk/reward fits your trading plan.
+""")
+
+    with st.expander("Buy Timing Labels Explained", expanded=False):
+        st.markdown("""
+**The buy timing engine evaluates 15+ conditions to answer: "Should I buy this stock right now?"**
+
+| Label | Meaning |
+|-------|---------|
+| **Buy Now** | Multiple buy signals confirmed — RSI favorable, trend bullish, near support, volume confirming. This is as good as a mechanical system can say "go." |
+| **Buy — Pullback Entry** | The trend is up but the stock just pulled back. A dip-buy opportunity. |
+| **Watch for Entry** | Some bullish signals but something is holding it back (overbought, near resistance, low volume). Wait for a better setup. |
+| **Risky Entry** | Bullish and bearish signals are roughly balanced. You could buy, but the odds aren't strongly in your favor. |
+| **Wait for Pullback** | The stock is good but too stretched right now. Let it come to you. |
+| **Overextended** | RSI overbought, price far above averages. Buying here means chasing. The last person in gets hurt. |
+| **Avoid for Now** | Bearish signals dominate. The stock may be in a downtrend, breaking support, or has serious red flags. |
+
+**These labels combine the rating score with short-term timing factors** that the overall rating doesn't capture — things like how far price is from support, consecutive up/down days, and gap behavior.
+""")

@@ -1000,6 +1000,63 @@ def compute_rating_history(df, sentiment, lookback_days=5, analyst_data=None, rs
     return history
 
 
+def compute_intraday_scores(ticker: str, sentiment, analyst_data=None, rs_data=None,
+                            insider_data=None, info=None) -> list[dict]:
+    try:
+        t = yf.Ticker(ticker)
+        df_5m = t.history(period="5d", interval="5m")
+        if df_5m is None or df_5m.empty or len(df_5m) < 30:
+            return []
+
+        scores = []
+        today = date.today()
+        today_bars = []
+        for idx in df_5m.index:
+            bar_date = idx.date() if hasattr(idx, 'date') else idx
+            if bar_date == today:
+                today_bars.append(idx)
+
+        if not today_bars:
+            last_date = df_5m.index[-1].date() if hasattr(df_5m.index[-1], 'date') else df_5m.index[-1]
+            for idx in df_5m.index:
+                bar_date = idx.date() if hasattr(idx, 'date') else idx
+                if bar_date == last_date:
+                    today_bars.append(idx)
+
+        if len(today_bars) < 2:
+            return []
+
+        step = max(1, len(today_bars) // 12)
+        sample_indices = list(range(0, len(today_bars), step))
+        if (len(today_bars) - 1) not in sample_indices:
+            sample_indices.append(len(today_bars) - 1)
+
+        for si in sample_indices:
+            bar_idx = today_bars[si]
+            end_pos = df_5m.index.get_loc(bar_idx) + 1
+            if end_pos < 30:
+                continue
+            sliced = df_5m.iloc[:end_pos]
+            try:
+                tech = compute_technical_indicators(sliced)
+                r = compute_rating(tech, sentiment, analyst_data=analyst_data,
+                                   rs_data=rs_data, insider_data=insider_data, info=info)
+                time_str = bar_idx.strftime("%H:%M") if hasattr(bar_idx, 'strftime') else str(bar_idx)
+                scores.append({
+                    "time": time_str,
+                    "score": r["combined_score"],
+                    "rating": r["rating"],
+                    "price": tech["current_price"],
+                    "rsi": tech["rsi"],
+                })
+            except Exception:
+                continue
+
+        return scores
+    except Exception:
+        return []
+
+
 def compute_buy_timing(technicals, sentiment, rating_data, earnings, divergences, info, rs_data):
     t = technicals
     rsi = t["rsi"]
@@ -1366,6 +1423,9 @@ def analyze_ticker(ticker: str, period: str = "6mo") -> dict:
                                              buy_timing, earnings, analyst, insider,
                                              rs_data, divergences, info)
 
+        intraday = compute_intraday_scores(ticker, sentiment, analyst_data=analyst,
+                                            rs_data=rs_data, insider_data=insider, info=info)
+
         return {
             "ticker": ticker.upper(),
             "info": info,
@@ -1373,6 +1433,7 @@ def analyze_ticker(ticker: str, period: str = "6mo") -> dict:
             "sentiment": sentiment,
             "rating": rating,
             "rating_history": rating_history,
+            "intraday_scores": intraday,
             "analyst": analyst,
             "insider": insider,
             "earnings": earnings,
