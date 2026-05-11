@@ -974,6 +974,7 @@ def render_analysis(result):
 with st.sidebar:
     st.markdown("### \U0001f4ca TalicoTrading")
     st.caption("Live data via yfinance • 5-min cache")
+    st.markdown("[talicotrading.streamlit.app](https://talicotrading.streamlit.app)", unsafe_allow_html=True)
     st.markdown("")
     ticker_input = st.text_input("Ticker Symbol", placeholder="e.g. AAPL").upper().strip()
     period = st.selectbox("Lookback", ["3mo", "6mo", "1y", "2y"], index=0)
