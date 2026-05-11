@@ -337,6 +337,8 @@ def compute_technical_indicators(df: pd.DataFrame) -> dict:
 
     rsi_ind = RSIIndicator(close=close, window=14)
     rsi = rsi_ind.rsi().iloc[-1]
+    rsi_prev = rsi_ind.rsi().iloc[-2] if len(rsi_ind.rsi()) >= 2 else rsi
+    rsi_5d_ago = rsi_ind.rsi().iloc[-5] if len(rsi_ind.rsi()) >= 5 else rsi
 
     macd_ind = MACD(close=close, window_slow=26, window_fast=12, window_sign=9)
     macd_line = macd_ind.macd().iloc[-1]
@@ -392,11 +394,43 @@ def compute_technical_indicators(df: pd.DataFrame) -> dict:
     support, resistance = detect_support_resistance(df)
     trend = determine_trend(current_price, sma_20, sma_50, sma_200)
 
+    ret_1d = ((close.iloc[-1] / close.iloc[-2]) - 1) * 100 if len(close) >= 2 else 0
+    ret_3d = ((close.iloc[-1] / close.iloc[-4]) - 1) * 100 if len(close) >= 4 else 0
+    ret_5d = ((close.iloc[-1] / close.iloc[-6]) - 1) * 100 if len(close) >= 6 else 0
+
+    consec_up = 0
+    consec_down = 0
+    for i in range(-1, max(-11, -len(close)), -1):
+        if i - 1 < -len(close):
+            break
+        if close.iloc[i] > close.iloc[i - 1]:
+            if consec_down > 0:
+                break
+            consec_up += 1
+        elif close.iloc[i] < close.iloc[i - 1]:
+            if consec_up > 0:
+                break
+            consec_down += 1
+        else:
+            break
+
+    high_5d = high.tail(5).max() if len(high) >= 5 else high.max()
+    low_5d = low.tail(5).min() if len(low) >= 5 else low.min()
+    dist_from_5d_high = ((current_price - high_5d) / high_5d) * 100
+    dist_from_5d_low = ((current_price - low_5d) / low_5d) * 100
+
+    dist_from_sma20 = ((current_price - sma_20) / sma_20) * 100 if sma_20 else 0
+    dist_from_sma50 = ((current_price - sma_50) / sma_50) * 100 if sma_50 else 0
+
+    gap = ((df["Open"].iloc[-1] - close.iloc[-2]) / close.iloc[-2]) * 100 if len(close) >= 2 else 0
+
     return {
         "current_price": round(current_price, 2),
         "price_change": round(price_change, 2),
         "price_change_pct": round((price_change / close.iloc[-2]) * 100, 2) if len(close) >= 2 and close.iloc[-2] != 0 else 0,
         "rsi": round(rsi, 2) if not np.isnan(rsi) else 50,
+        "rsi_prev": round(rsi_prev, 2) if not np.isnan(rsi_prev) else 50,
+        "rsi_5d_ago": round(rsi_5d_ago, 2) if not np.isnan(rsi_5d_ago) else 50,
         "macd_line": round(macd_line, 4),
         "macd_signal": round(macd_signal, 4),
         "macd_hist": round(macd_hist, 4),
@@ -422,6 +456,18 @@ def compute_technical_indicators(df: pd.DataFrame) -> dict:
         "support_levels": support,
         "resistance_levels": resistance,
         "trend": trend,
+        "ret_1d": round(ret_1d, 2),
+        "ret_3d": round(ret_3d, 2),
+        "ret_5d": round(ret_5d, 2),
+        "consec_up": consec_up,
+        "consec_down": consec_down,
+        "high_5d": round(high_5d, 2),
+        "low_5d": round(low_5d, 2),
+        "dist_from_5d_high": round(dist_from_5d_high, 2),
+        "dist_from_5d_low": round(dist_from_5d_low, 2),
+        "dist_from_sma20": round(dist_from_sma20, 2),
+        "dist_from_sma50": round(dist_from_sma50, 2),
+        "gap_pct": round(gap, 2),
     }
 
 
@@ -954,6 +1000,335 @@ def compute_rating_history(df, sentiment, lookback_days=5, analyst_data=None, rs
     return history
 
 
+def compute_buy_timing(technicals, sentiment, rating_data, earnings, divergences, info, rs_data):
+    t = technicals
+    rsi = t["rsi"]
+    score = rating_data["combined_score"]
+    reasons = []
+    risk_factors = []
+    better_entry = []
+
+    buy_signals = 0
+    caution_signals = 0
+
+    if rsi < 35:
+        buy_signals += 2
+        reasons.append(f"RSI at {rsi:.0f} — oversold, historically strong entry zone")
+    elif rsi < 45:
+        buy_signals += 1
+        reasons.append(f"RSI at {rsi:.0f} — neutral-low, room to run")
+    elif rsi > 70:
+        caution_signals += 2
+        risk_factors.append(f"RSI at {rsi:.0f} — overbought, pullback likely before next leg up")
+        better_entry.append("Wait for RSI to cool below 60")
+    elif rsi > 60:
+        caution_signals += 1
+        risk_factors.append(f"RSI at {rsi:.0f} — elevated, not ideal for fresh entries")
+
+    if t["macd_recent_crossover"] and t["macd_crossover_direction"] == "bullish":
+        buy_signals += 2
+        reasons.append("Fresh bullish MACD crossover — momentum just turned positive")
+    elif t["macd_recent_crossover"] and t["macd_crossover_direction"] == "bearish":
+        caution_signals += 2
+        risk_factors.append("Fresh bearish MACD crossover — momentum turning negative")
+    elif t["macd_hist"] > 0 and t["macd_hist"] > t["macd_hist_prev"]:
+        buy_signals += 1
+        reasons.append("MACD histogram expanding bullish — momentum building")
+    elif t["macd_hist"] < 0 and t["macd_hist"] < t["macd_hist_prev"]:
+        caution_signals += 1
+        risk_factors.append("MACD histogram expanding bearish — selling pressure increasing")
+
+    if "bullish" in t["trend"]:
+        buy_signals += 1
+        reasons.append(f"Trend is {t['trend']} — price above key moving averages")
+    elif "bearish" in t["trend"]:
+        caution_signals += 2
+        risk_factors.append(f"Trend is {t['trend']} — fighting the primary trend")
+
+    if t["support_levels"]:
+        nearest_sup = t["support_levels"][0]
+        sup_dist = ((t["current_price"] - nearest_sup) / t["current_price"]) * 100
+        if sup_dist < 2:
+            buy_signals += 2
+            reasons.append(f"Price within 2% of support at ${nearest_sup} — tight stop possible, good risk/reward")
+        elif sup_dist < 5:
+            buy_signals += 1
+            reasons.append(f"Support at ${nearest_sup} ({sup_dist:.1f}% below) — reasonable stop-loss level")
+        if sup_dist > 8:
+            caution_signals += 1
+            risk_factors.append(f"Nearest support is {sup_dist:.1f}% below — wide stop required, poor risk/reward")
+            better_entry.append(f"Wait for a pullback toward support at ${nearest_sup}")
+
+    if t["resistance_levels"]:
+        nearest_res = t["resistance_levels"][0]
+        res_dist = ((nearest_res - t["current_price"]) / t["current_price"]) * 100
+        if res_dist < 1.5:
+            caution_signals += 1
+            risk_factors.append(f"Resistance at ${nearest_res} is only {res_dist:.1f}% above — limited upside before resistance")
+            better_entry.append("Wait for a breakout above resistance or a pullback to support")
+
+    if t["vol_ratio"] > 1.3 and t["price_direction"] == "up":
+        buy_signals += 1
+        reasons.append(f"Volume {t['vol_ratio']:.1f}x average on an up day — buyers stepping in")
+    elif t["vol_ratio"] > 1.3 and t["price_direction"] == "down":
+        caution_signals += 1
+        risk_factors.append(f"Volume {t['vol_ratio']:.1f}x average on a down day — distribution")
+
+    if abs(t.get("dist_from_sma20", 0)) > 5:
+        if t["dist_from_sma20"] > 5:
+            caution_signals += 1
+            risk_factors.append(f"Price {t['dist_from_sma20']:.1f}% above SMA20 — overextended, mean-reversion risk")
+            better_entry.append("Wait for price to pull back toward the 20-day moving average")
+        elif t["dist_from_sma20"] < -5:
+            buy_signals += 1
+            reasons.append(f"Price {abs(t['dist_from_sma20']):.1f}% below SMA20 — stretched to downside, bounce likely")
+
+    if "bullish" in t["trend"] and t.get("ret_5d", 0) < -3 and rsi < 50:
+        buy_signals += 1
+        reasons.append(f"Pullback of {abs(t['ret_5d']):.1f}% in a bullish trend — classic pullback entry")
+
+    if t.get("consec_up", 0) >= 5:
+        caution_signals += 1
+        risk_factors.append(f"{t['consec_up']} consecutive up days — short-term exhaustion risk")
+        better_entry.append("Wait for at least 1-2 red days to reset short-term momentum")
+    if t.get("consec_down", 0) >= 4 and rsi < 40:
+        buy_signals += 1
+        reasons.append(f"{t['consec_down']} consecutive down days with RSI at {rsi:.0f} — washout may be ending")
+
+    if sentiment.get("overall_sentiment") == "bullish" and sentiment.get("strength") in ("strong", "moderate"):
+        buy_signals += 1
+        reasons.append("Positive news sentiment supports the setup")
+    elif sentiment.get("overall_sentiment") == "bearish" and sentiment.get("strength") in ("strong", "moderate"):
+        caution_signals += 1
+        risk_factors.append("Negative news sentiment — headwinds for any long position")
+
+    if earnings.get("has_date") and earnings.get("in_swing_window"):
+        days_to = earnings["days_until"]
+        if days_to <= 5:
+            caution_signals += 2
+            risk_factors.append(f"Earnings in {days_to} days — binary event risk, gap risk overnight")
+            better_entry.append("Wait until after earnings to avoid gap risk")
+        elif days_to <= 14:
+            caution_signals += 1
+            risk_factors.append(f"Earnings in {days_to} days — position sizing should be reduced")
+
+    if divergences:
+        for d in divergences:
+            if d["type"] == "bullish":
+                buy_signals += 1
+                reasons.append(f"Bullish {d['indicator']} divergence detected — reversal signal")
+            else:
+                caution_signals += 1
+                risk_factors.append(f"Bearish {d['indicator']} divergence — potential reversal down")
+
+    if rs_data and rs_data.get("has_data") and rs_data["rs_ratio"] > 5:
+        buy_signals += 1
+        reasons.append(f"Outperforming SPY by {rs_data['rs_ratio']:.1f}% — strong relative strength")
+
+    net = buy_signals - caution_signals
+
+    if net >= 4 and score >= 65:
+        timing = "Buy Now"
+        confidence = "high"
+    elif net >= 3 and score >= 55:
+        timing = "Buy Now"
+        confidence = "moderate"
+    elif "bullish" in t["trend"] and t.get("ret_5d", 0) < -2 and rsi < 50 and net >= 1:
+        timing = "Buy — Pullback Entry"
+        confidence = "moderate"
+    elif net >= 1 and score >= 50:
+        timing = "Watch for Entry"
+        confidence = "low"
+    elif rsi > 70 or t.get("dist_from_sma20", 0) > 5:
+        timing = "Overextended"
+        confidence = "moderate"
+    elif "bullish" in t["trend"] and rsi > 55 and net < 2:
+        timing = "Wait for Pullback"
+        confidence = "moderate"
+        if not better_entry:
+            better_entry.append("Wait for RSI to drop below 50 or price to touch SMA20")
+    elif caution_signals >= 3 or score < 35:
+        timing = "Avoid for Now"
+        confidence = "high" if caution_signals >= 4 else "moderate"
+    elif net <= -1:
+        timing = "Risky Entry"
+        confidence = "moderate"
+    else:
+        timing = "Watch for Entry"
+        confidence = "low"
+
+    if not better_entry and timing not in ("Buy Now", "Buy — Pullback Entry"):
+        if rsi > 50:
+            better_entry.append("Wait for RSI to drop below 45")
+        if t["support_levels"]:
+            better_entry.append(f"Wait for price to pull back toward support at ${t['support_levels'][0]}")
+        if t["macd_hist"] < 0:
+            better_entry.append("Wait for MACD to cross bullish")
+
+    return {
+        "timing": timing,
+        "confidence": confidence,
+        "buy_signals": buy_signals,
+        "caution_signals": caution_signals,
+        "reasons": reasons[:6],
+        "risk_factors": risk_factors[:5],
+        "better_entry": better_entry[:3],
+    }
+
+
+def generate_written_analysis(ticker, technicals, sentiment, rating_data, buy_timing,
+                               earnings, analyst, insider, rs_data, divergences, info):
+    t = technicals
+    bt = buy_timing
+    rsi = t["rsi"]
+    price = t["current_price"]
+    score = rating_data["combined_score"]
+    timing = bt["timing"]
+
+    summary_parts = []
+    if timing == "Buy Now":
+        summary_parts.append(f"{ticker} is showing a strong entry setup right now.")
+    elif timing == "Buy — Pullback Entry":
+        summary_parts.append(f"{ticker} is pulling back within an uptrend — this could be a good entry.")
+    elif timing == "Watch for Entry":
+        summary_parts.append(f"{ticker} has some positive signals but isn't a clear buy yet.")
+    elif timing == "Overextended":
+        summary_parts.append(f"{ticker} has run too far too fast — wait for a pullback before entering.")
+    elif timing == "Wait for Pullback":
+        summary_parts.append(f"{ticker} is in a good trend but needs to cool off before entering.")
+    elif timing == "Risky Entry":
+        summary_parts.append(f"{ticker} has mixed signals — buying here carries above-average risk.")
+    else:
+        summary_parts.append(f"{ticker} is not in a favorable position for a swing trade entry right now.")
+
+    summary_parts.append(f"The stock is trading at ${price:.2f} with an overall score of {score:.0f}/100.")
+
+    trend_desc = t["trend"]
+    if "strong bullish" in trend_desc:
+        summary_parts.append("All major moving averages are aligned bullish — the primary trend is strongly up.")
+    elif "bullish" in trend_desc:
+        summary_parts.append("The short-term trend is bullish with price above key moving averages.")
+    elif "strong bearish" in trend_desc:
+        summary_parts.append("All major moving averages are aligned bearish — this is a downtrend.")
+    elif "bearish" in trend_desc:
+        summary_parts.append("The short-term trend is bearish — price is below key moving averages.")
+    else:
+        summary_parts.append("The trend is neutral — no clear directional bias from moving averages.")
+
+    bull_signals = []
+    bear_signals = []
+
+    if rsi < 35:
+        bull_signals.append(f"RSI is oversold at {rsi:.0f} — historically a high-probability reversal zone")
+    elif rsi < 45:
+        bull_signals.append(f"RSI at {rsi:.0f} is in neutral-low territory — room for upside")
+    if rsi > 70:
+        bear_signals.append(f"RSI is overbought at {rsi:.0f} — elevated risk of a pullback")
+    elif rsi > 60:
+        bear_signals.append(f"RSI at {rsi:.0f} is approaching overbought — momentum getting extended")
+
+    if t["macd_recent_crossover"] and t["macd_crossover_direction"] == "bullish":
+        bull_signals.append("MACD just crossed bullish — fresh momentum shift to the upside")
+    elif t["macd_hist"] > 0 and t["macd_hist"] > t["macd_hist_prev"]:
+        bull_signals.append("MACD histogram is positive and expanding — bullish momentum building")
+    if t["macd_recent_crossover"] and t["macd_crossover_direction"] == "bearish":
+        bear_signals.append("MACD just crossed bearish — momentum shifting against longs")
+    elif t["macd_hist"] < 0 and t["macd_hist"] < t["macd_hist_prev"]:
+        bear_signals.append("MACD histogram is negative and expanding — bearish momentum increasing")
+
+    if "bullish" in trend_desc:
+        bull_signals.append(f"Price is in a {trend_desc} trend — MAs are lined up for upside")
+    if "bearish" in trend_desc:
+        bear_signals.append(f"Price is in a {trend_desc} trend — fighting the trend is risky")
+
+    if t["vol_ratio"] > 1.3 and t["price_direction"] == "up":
+        bull_signals.append(f"Volume is {t['vol_ratio']:.1f}x average on an up day — institutional interest")
+    if t["vol_ratio"] > 1.3 and t["price_direction"] == "down":
+        bear_signals.append(f"Volume is {t['vol_ratio']:.1f}x average on a down day — distribution selling")
+
+    if t["bb_position"] < 0.15:
+        bull_signals.append("Price near lower Bollinger Band — mean-reversion bounce likely")
+    if t["bb_position"] > 0.85:
+        bear_signals.append("Price near upper Bollinger Band — overextended, pullback risk")
+
+    if sentiment.get("overall_sentiment") == "bullish":
+        bull_signals.append(f"News sentiment is bullish ({sentiment.get('strength', '')} strength)")
+    elif sentiment.get("overall_sentiment") == "bearish":
+        bear_signals.append(f"News sentiment is bearish ({sentiment.get('strength', '')} strength)")
+
+    if rs_data and rs_data.get("has_data"):
+        if rs_data["rs_ratio"] > 3:
+            bull_signals.append(f"Outperforming SPY by {rs_data['rs_ratio']:.1f}% — relative strength leader")
+        elif rs_data["rs_ratio"] < -3:
+            bear_signals.append(f"Underperforming SPY by {abs(rs_data['rs_ratio']):.1f}% — relative weakness")
+
+    if divergences:
+        for d in divergences:
+            if d["type"] == "bullish":
+                bull_signals.append(f"Bullish {d['indicator']} divergence — price weakness not confirmed by momentum")
+            else:
+                bear_signals.append(f"Bearish {d['indicator']} divergence — price strength not confirmed by momentum")
+
+    if info.get("targetMeanPrice") and info.get("numberOfAnalystOpinions", 0) >= 3:
+        upside = ((info["targetMeanPrice"] - price) / price) * 100
+        if upside > 10:
+            bull_signals.append(f"Analyst mean target implies {upside:.0f}% upside")
+        elif upside < -5:
+            bear_signals.append(f"Analyst mean target implies {abs(upside):.0f}% downside — consensus says overvalued")
+
+    risks = []
+    if earnings.get("has_date") and earnings.get("in_swing_window"):
+        risks.append(f"Earnings report in {earnings['days_until']} days ({earnings['date_str']}) — binary event with gap risk")
+    if rsi > 65:
+        risks.append("RSI is elevated — a pullback could erase entry gains quickly")
+    if t.get("dist_from_sma20", 0) > 5:
+        risks.append(f"Price is {t['dist_from_sma20']:.1f}% above SMA20 — mean-reversion risk")
+    if "bearish" in trend_desc:
+        risks.append("Buying against the trend — higher probability of the trade going against you")
+    if sentiment.get("overall_sentiment") == "bearish" and sentiment.get("strength") == "strong":
+        risks.append("Strong negative news flow could accelerate selling")
+    if t.get("atr_pct", 0) > 4:
+        risks.append(f"High volatility (ATR {t['atr_pct']:.1f}% of price) — wider stops needed, more pain on drawdowns")
+    if insider and insider.get("sentiment") == "bearish":
+        risks.append("Insiders have been net sellers — they know the company better than anyone")
+
+    if score >= 70:
+        short_term = "Bullish — multiple signals confirm buying pressure. Expect continuation if volume holds."
+    elif score >= 55:
+        short_term = "Cautiously bullish — setup is developing but needs confirmation from volume or a breakout."
+    elif score >= 45:
+        short_term = "Neutral — no strong directional bias. Could go either way in the next 1-2 weeks."
+    elif score >= 30:
+        short_term = "Cautiously bearish — more selling pressure than buying. Avoid longs unless clear reversal signal."
+    else:
+        short_term = "Bearish — selling pressure dominant. Not a good environment for swing trade entries."
+
+    if score >= 65 and "bullish" in trend_desc:
+        medium_term = "Positive — uptrend intact with strong internals. Favorable for 2-4 week holds."
+    elif score >= 50:
+        medium_term = "Mixed — some positive elements but the trend needs to prove itself. Watch for breakout or breakdown."
+    else:
+        medium_term = "Negative — trend and momentum favor the downside. Wait for a base to form before considering entries."
+
+    if bt["confidence"] == "high":
+        conf_text = "High — multiple independent signals confirm this assessment"
+    elif bt["confidence"] == "moderate":
+        conf_text = "Moderate — signal is present but not fully confirmed across all indicators"
+    else:
+        conf_text = "Low — signals are mixed, proceed with caution and smaller position size"
+
+    return {
+        "summary": " ".join(summary_parts),
+        "bull_signals": bull_signals[:6],
+        "bear_signals": bear_signals[:6],
+        "risks": risks[:5],
+        "short_term_outlook": short_term,
+        "medium_term_outlook": medium_term,
+        "confidence": conf_text,
+        "better_entry": bt["better_entry"],
+    }
+
+
 def analyze_ticker(ticker: str, period: str = "6mo") -> dict:
     try:
         df = fetch_stock_data(ticker, period)
@@ -985,6 +1360,12 @@ def analyze_ticker(ticker: str, period: str = "6mo") -> dict:
         else:
             agreement = "neutral"
 
+        buy_timing = compute_buy_timing(technicals, sentiment, rating, earnings,
+                                         divergences, info, rs_data)
+        written = generate_written_analysis(ticker.upper(), technicals, sentiment, rating,
+                                             buy_timing, earnings, analyst, insider,
+                                             rs_data, divergences, info)
+
         return {
             "ticker": ticker.upper(),
             "info": info,
@@ -998,6 +1379,8 @@ def analyze_ticker(ticker: str, period: str = "6mo") -> dict:
             "relative_strength": rs_data,
             "divergences": divergences,
             "sentiment_technical_agreement": agreement,
+            "buy_timing": buy_timing,
+            "written_analysis": written,
             "df": df,
             "error": None,
         }
