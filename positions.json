@@ -1,0 +1,22 @@
+[
+  {
+    "id": "XLE_2026-04-23_0",
+    "ticker": "XLE",
+    "entry_price": 56.665,
+    "shares": 0.0268,
+    "entry_date": "2026-04-23",
+    "stop_loss": null,
+    "target_price": null,
+    "notes": "could have sold at 5% trendline strat but I waiting too long : ( "
+  },
+  {
+    "id": "HD_2026-04-21_1",
+    "ticker": "HD",
+    "entry_price": 352.93,
+    "shares": 0.0043,
+    "entry_date": "2026-04-21",
+    "stop_loss": null,
+    "target_price": null,
+    "notes": ""
+  }
+]
