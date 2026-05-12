@@ -3,6 +3,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from streamlit_autorefresh import st_autorefresh
 from analysis import (
     analyze_ticker, load_positions, save_positions,
@@ -484,6 +485,7 @@ def render_rating_history(result):
     fetched_at = result.get("fetched_at", "")
     data_date = result.get("data_date", "")
     last_bar_time = result.get("last_bar_time", "")
+    market_session = result.get("market_session", "closed")
     if not history and not intraday:
         st.caption("Not enough data for rating history.")
         return
@@ -550,30 +552,52 @@ def render_rating_history(result):
 
     if intra_days:
         date_part = data_date if data_date else "Today"
-        now = datetime.now()
-        now_str = now.strftime("%a %b %d, %I:%M %p").replace(" 0", " ").lstrip("0")
-        today_str = now.strftime("%a %b %d").replace(" 0", " ")
+        pt = ZoneInfo("America/Los_Angeles")
+        now_pt = datetime.now(pt)
+        now_str = now_pt.strftime("%a %b %d, %I:%M %p PT").replace(" 0", " ").lstrip("0")
+        today_str = now_pt.strftime("%a %b %d").replace(" 0", " ")
         is_stale = (data_date and data_date != today_str)
-        market_open = (now.weekday() < 5 and 9 * 60 + 30 <= now.hour * 60 + now.minute <= 16 * 60)
 
-        if is_stale:
-            if market_open:
-                status_icon = "\U0001f7e1"
-                status_text = f"Last session: {data_date}"
-                status_note = "Market is open — re-analyze for live data"
-            else:
-                status_icon = "\U0001f534"
-                status_text = f"Last session: {data_date}"
-                status_note = "Market closed — will update when trading resumes"
+        et = ZoneInfo("America/New_York")
+        now_et = datetime.now(et)
+        et_mins = now_et.hour * 60 + now_et.minute
+        if now_et.weekday() >= 5:
+            current_session = "closed"
+        elif et_mins < 240:
+            current_session = "closed"
+        elif et_mins < 570:
+            current_session = "pre-market"
+        elif et_mins < 960:
+            current_session = "regular"
+        elif et_mins < 1200:
+            current_session = "after-hours"
         else:
-            if last_bar_time:
-                status_icon = "\U0001f7e2"
-                status_text = f"Live through {last_bar_time} ET"
-                status_note = "Auto-refreshes every 5 min"
-            else:
-                status_icon = "\U0001f7e2"
-                status_text = "Live"
-                status_note = "Auto-refreshes every 5 min"
+            current_session = "closed"
+
+        session_labels = {
+            "pre-market": ("Pre-Market", "#f0883e"),
+            "regular": ("Market Open", "#3fb950"),
+            "after-hours": ("After-Hours", "#a371f7"),
+            "closed": ("Market Closed", "#f85149"),
+        }
+        session_name, session_color = session_labels.get(current_session, ("Closed", "#f85149"))
+
+        if is_stale and current_session == "closed":
+            status_icon = "\U0001f534"
+            status_text = f"Last session: {data_date}"
+            status_note = "Market closed — will update when trading resumes"
+        elif is_stale:
+            status_icon = "\U0001f7e1"
+            status_text = f"Last session: {data_date}"
+            status_note = f"{session_name} active — re-analyze for live data"
+        elif last_bar_time:
+            status_icon = "\U0001f7e2"
+            status_text = f"Live through {last_bar_time} PT"
+            status_note = "Auto-refreshes every 5 min"
+        else:
+            status_icon = "\U0001f7e2"
+            status_text = "Live"
+            status_note = "Auto-refreshes every 5 min"
 
         st.markdown(
             f"<div style='background:#0d1117;border:1px solid #30363d;border-radius:8px;"
@@ -583,6 +607,8 @@ def render_rating_history(result):
             f"<div>"
             f"<span style='font-size:1.05em;font-weight:700'>"
             f"\U0001f4c8 Intraday Rating Timeline</span>"
+            f"&nbsp;&nbsp;<span style='background:{session_color};color:#fff;padding:2px 8px;"
+            f"border-radius:4px;font-size:0.7em;font-weight:600'>{session_name}</span>"
             f"</div>"
             f"<div style='text-align:right'>"
             f"<div style='background:#1a1f29;border:1px solid #30363d;padding:4px 10px;"
@@ -592,9 +618,9 @@ def render_rating_history(result):
             f"<div style='display:flex;justify-content:space-between;flex-wrap:wrap;"
             f"margin-top:4px'>"
             f"<span style='font-size:0.75em;color:#6e7681'>"
-            f"5-minute intervals from the last hour • {status_note}</span>"
+            f"5-minute intervals • Includes pre-market & after-hours • {status_note}</span>"
             f"<span style='font-size:0.75em;color:#6e7681'>"
-            f"\U0001f552 Now: {now_str} ET</span>"
+            f"\U0001f552 {now_str}</span>"
             f"</div>"
             f"</div>",
             unsafe_allow_html=True)
@@ -719,13 +745,22 @@ def render_rating_history(result):
                          "border-radius:4px;font-size:0.65em;font-weight:700;"
                          "margin-left:8px;letter-spacing:0.5px'>LIVE</span>") if is_latest else ""
 
+            snap_session = snap.get("session", "regular")
+            session_badge = ""
+            if snap_session == "pre-market":
+                session_badge = (" <span style='background:#f0883e;color:#fff;padding:1px 5px;"
+                                "border-radius:3px;font-size:0.6em;font-weight:600'>PRE</span>")
+            elif snap_session == "after-hours":
+                session_badge = (" <span style='background:#a371f7;color:#fff;padding:1px 5px;"
+                                "border-radius:3px;font-size:0.6em;font-weight:600'>AH</span>")
+
             st.markdown(
                 f"<div style='background:{bg};border:{border_w} solid {border_color};"
                 f"border-radius:8px;padding:10px 14px;margin-bottom:6px'>"
                 f"<div style='display:flex;align-items:center;justify-content:space-between'>"
                 f"<div style='display:flex;align-items:center;gap:8px'>"
                 f"<span style='font-weight:700;font-size:0.95em;color:#e6edf3'>{snap['date']}</span>"
-                f"{latest_tag}"
+                f"{session_badge}{latest_tag}"
                 f"<span style='background:{rc};color:#000;padding:3px 10px;"
                 f"border-radius:6px;font-weight:700;font-size:0.8em'>"
                 f"{snap['score']:.0f} {snap['rating']}</span>"
@@ -737,16 +772,17 @@ def render_rating_history(result):
                 f"</div>",
                 unsafe_allow_html=True)
     elif not intraday:
-        now = datetime.now()
-        now_str = now.strftime("%a %b %d, %I:%M %p").replace(" 0", " ").lstrip("0")
+        pt = ZoneInfo("America/Los_Angeles")
+        now_pt = datetime.now(pt)
+        now_str = now_pt.strftime("%a %b %d, %I:%M %p PT").replace(" 0", " ").lstrip("0")
         st.markdown(
             f"<div style='background:#161b22;border:1px solid #30363d;border-radius:8px;"
             f"padding:16px;margin:16px 0;text-align:center;color:#8b949e'>"
             f"<div style='font-size:1.2em;margin-bottom:4px'>No intraday data available</div>"
             f"<div style='font-size:0.85em'>Market is closed. Data refreshes automatically "
-            f"during trading hours (9:30 AM — 4:00 PM ET)</div>"
+            f"during extended hours (1:00 AM — 5:00 PM PT)</div>"
             f"<div style='font-size:0.75em;margin-top:6px;color:#6e7681'>"
-            f"\U0001f552 Current time: {now_str} ET</div></div>",
+            f"\U0001f552 Current time: {now_str}</div></div>",
             unsafe_allow_html=True)
 
     with st.expander("Day-by-Day Breakdown", expanded=False):

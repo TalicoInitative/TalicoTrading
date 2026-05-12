@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, date, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -1051,13 +1052,39 @@ def compute_rating_history(df, sentiment, lookback_days=5, analyst_data=None, rs
     return history
 
 
+def _et_to_pt(dt_obj):
+    et = ZoneInfo("America/New_York")
+    pt = ZoneInfo("America/Los_Angeles")
+    if dt_obj.tzinfo is None:
+        dt_obj = dt_obj.replace(tzinfo=et)
+    return dt_obj.astimezone(pt)
+
+
+def _market_session(et_hour, et_minute):
+    mins = et_hour * 60 + et_minute
+    if mins < 240:
+        return "closed"
+    if mins < 570:
+        return "pre-market"
+    if mins < 960:
+        return "regular"
+    if mins < 1200:
+        return "after-hours"
+    return "closed"
+
+
 def compute_intraday_scores(ticker: str, sentiment, analyst_data=None, rs_data=None,
                             insider_data=None, info=None) -> dict:
+    pt = ZoneInfo("America/Los_Angeles")
+    now_pt = datetime.now(pt)
+    fetched_at = now_pt.strftime("%I:%M:%S %p").lstrip("0")
+
     try:
         t = yf.Ticker(ticker)
-        df_5m = t.history(period="5d", interval="5m")
+        df_5m = t.history(period="5d", interval="5m", prepost=True)
         if df_5m is None or df_5m.empty or len(df_5m) < 30:
-            return {"snapshots": [], "fetched_at": datetime.now().strftime("%H:%M:%S"), "data_date": ""}
+            return {"snapshots": [], "fetched_at": fetched_at, "data_date": "",
+                    "last_bar_time": "", "session": "closed"}
 
         scores = []
         today = date.today()
@@ -1082,12 +1109,18 @@ def compute_intraday_scores(ticker: str, sentiment, analyst_data=None, rs_data=N
                         today_bars.append(idx)
 
         if len(today_bars) < 2:
-            return {"snapshots": [], "fetched_at": datetime.now().strftime("%H:%M:%S"), "data_date": ""}
+            return {"snapshots": [], "fetched_at": fetched_at, "data_date": "",
+                    "last_bar_time": "", "session": "closed"}
 
         data_date_raw = today_bars[0].date() if hasattr(today_bars[0], 'date') else today
         data_date_label = data_date_raw.strftime("%a %b %d").replace(" 0", " ") if hasattr(data_date_raw, 'strftime') else str(data_date_raw)
 
-        last_bar_min = today_bars[-1].hour * 60 + today_bars[-1].minute if hasattr(today_bars[-1], 'hour') else 960
+        last_bar_et = today_bars[-1]
+        last_session = _market_session(
+            last_bar_et.hour if hasattr(last_bar_et, 'hour') else 10,
+            last_bar_et.minute if hasattr(last_bar_et, 'minute') else 0)
+
+        last_bar_min = last_bar_et.hour * 60 + last_bar_et.minute if hasattr(last_bar_et, 'hour') else 960
         cutoff_min = last_bar_min - 60
         recent_bars = []
         for idx in today_bars:
@@ -1110,7 +1143,11 @@ def compute_intraday_scores(ticker: str, sentiment, analyst_data=None, rs_data=N
                 tech = compute_technical_indicators(sliced)
                 r = compute_rating(tech, sentiment, analyst_data=analyst_data,
                                    rs_data=rs_data, insider_data=insider_data, info=info)
-                time_str = bar_idx.strftime("%H:%M") if hasattr(bar_idx, 'strftime') else str(bar_idx)
+                bar_pt = _et_to_pt(bar_idx) if hasattr(bar_idx, 'hour') else bar_idx
+                time_str = bar_pt.strftime("%I:%M %p").lstrip("0") if hasattr(bar_pt, 'strftime') else str(bar_idx)
+                bar_et_h = bar_idx.hour if hasattr(bar_idx, 'hour') else 10
+                bar_et_m = bar_idx.minute if hasattr(bar_idx, 'minute') else 0
+                session_tag = _market_session(bar_et_h, bar_et_m)
                 scores.append({
                     "time": time_str,
                     "score": r["combined_score"],
@@ -1119,6 +1156,7 @@ def compute_intraday_scores(ticker: str, sentiment, analyst_data=None, rs_data=N
                     "rsi": tech["rsi"],
                     "component_scores": r["component_scores"],
                     "key_signals": r["key_signals"],
+                    "session": session_tag,
                 })
             except Exception:
                 continue
@@ -1128,13 +1166,13 @@ def compute_intraday_scores(ticker: str, sentiment, analyst_data=None, rs_data=N
         if scores:
             scores[0]["change"] = None
 
-        fetched_at = datetime.now().strftime("%H:%M:%S")
-        last_bar_ts = today_bars[-1]
-        last_bar_time = last_bar_ts.strftime("%I:%M %p").lstrip("0") if hasattr(last_bar_ts, 'strftime') else ""
+        last_bar_pt = _et_to_pt(last_bar_et) if hasattr(last_bar_et, 'hour') else last_bar_et
+        last_bar_time = last_bar_pt.strftime("%I:%M %p").lstrip("0") if hasattr(last_bar_pt, 'strftime') else ""
         return {"snapshots": scores, "fetched_at": fetched_at, "data_date": data_date_label,
-                "last_bar_time": last_bar_time}
+                "last_bar_time": last_bar_time, "session": last_session}
     except Exception:
-        return {"snapshots": [], "fetched_at": datetime.now().strftime("%H:%M:%S"), "data_date": ""}
+        return {"snapshots": [], "fetched_at": fetched_at, "data_date": "",
+                "last_bar_time": "", "session": "closed"}
 
 
 def compute_buy_timing(technicals, sentiment, rating_data, earnings, divergences, info, rs_data):
@@ -1514,9 +1552,10 @@ def analyze_ticker(ticker: str, period: str = "6mo") -> dict:
             "rating": rating,
             "rating_history": rating_history,
             "intraday_scores": intraday_result.get("snapshots", []),
-            "fetched_at": intraday_result.get("fetched_at", datetime.now().strftime("%H:%M:%S")),
+            "fetched_at": intraday_result.get("fetched_at", ""),
             "data_date": intraday_result.get("data_date", ""),
             "last_bar_time": intraday_result.get("last_bar_time", ""),
+            "market_session": intraday_result.get("session", "closed"),
             "analyst": analyst,
             "insider": insider,
             "earnings": earnings,
