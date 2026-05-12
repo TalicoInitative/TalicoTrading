@@ -1089,28 +1089,32 @@ def compute_intraday_scores(ticker: str, sentiment, analyst_data=None, rs_data=N
         scores = []
         today = date.today()
         today_bars = []
+        prev_day_bars = []
+        last_date = None
         for idx in df_5m.index:
             bar_date = idx.date() if hasattr(idx, 'date') else idx
             if bar_date == today:
                 today_bars.append(idx)
 
-        if len(today_bars) < 5:
-            today_bars = []
-            last_date = None
-            for idx in reversed(df_5m.index):
+        for idx in reversed(df_5m.index):
+            bar_date = idx.date() if hasattr(idx, 'date') else idx
+            if bar_date != today:
+                last_date = bar_date
+                break
+        if last_date:
+            for idx in df_5m.index:
                 bar_date = idx.date() if hasattr(idx, 'date') else idx
-                if bar_date != today:
-                    last_date = bar_date
-                    break
-            if last_date:
-                for idx in df_5m.index:
-                    bar_date = idx.date() if hasattr(idx, 'date') else idx
-                    if bar_date == last_date:
-                        today_bars.append(idx)
+                if bar_date == last_date:
+                    prev_day_bars.append(idx)
 
-        if len(today_bars) < 2:
+        if len(today_bars) >= 1:
+            use_bars = today_bars
+        elif len(prev_day_bars) >= 2:
+            use_bars = prev_day_bars
+        else:
             return {"snapshots": [], "fetched_at": fetched_at, "data_date": "",
                     "last_bar_time": "", "session": "closed"}
+        today_bars = use_bars
 
         data_date_raw = today_bars[0].date() if hasattr(today_bars[0], 'date') else today
         data_date_label = data_date_raw.strftime("%a %b %d").replace(" 0", " ") if hasattr(data_date_raw, 'strftime') else str(data_date_raw)
@@ -1127,7 +1131,7 @@ def compute_intraday_scores(ticker: str, sentiment, analyst_data=None, rs_data=N
             bar_min = idx.hour * 60 + idx.minute if hasattr(idx, 'hour') else 0
             if bar_min >= cutoff_min:
                 recent_bars.append(idx)
-        if len(recent_bars) < 3:
+        if len(recent_bars) < 2:
             recent_bars = today_bars[-12:]
         sample_indices = [today_bars.index(b) for b in recent_bars]
         if (len(today_bars) - 1) not in sample_indices:

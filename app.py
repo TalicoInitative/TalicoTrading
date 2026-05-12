@@ -554,7 +554,7 @@ def render_rating_history(result):
         date_part = data_date if data_date else "Today"
         pt = ZoneInfo("America/Los_Angeles")
         now_pt = datetime.now(pt)
-        now_str = now_pt.strftime("%a %b %d, %I:%M %p PT").replace(" 0", " ").lstrip("0")
+        now_str = now_pt.strftime("%a %b %d, %I:%M %p").replace(" 0", " ").lstrip("0")
         today_str = now_pt.strftime("%a %b %d").replace(" 0", " ")
         is_stale = (data_date and data_date != today_str)
 
@@ -574,92 +574,125 @@ def render_rating_history(result):
         else:
             current_session = "closed"
 
-        session_labels = {
-            "pre-market": ("Pre-Market", "#f0883e"),
-            "regular": ("Market Open", "#3fb950"),
-            "after-hours": ("After-Hours", "#a371f7"),
-            "closed": ("Market Closed", "#f85149"),
+        session_config = {
+            "pre-market": ("PRE-MARKET", "#f0883e", "\U0001f7e0"),
+            "regular": ("MARKET OPEN", "#3fb950", "\U0001f7e2"),
+            "after-hours": ("AFTER-HOURS", "#a371f7", "\U0001f7e3"),
+            "closed": ("MARKET CLOSED", "#f85149", "\U0001f534"),
         }
-        session_name, session_color = session_labels.get(current_session, ("Closed", "#f85149"))
+        session_name, session_color, session_dot = session_config.get(
+            current_session, ("CLOSED", "#f85149", "\U0001f534"))
 
-        if is_stale and current_session == "closed":
-            status_icon = "\U0001f534"
-            status_text = f"Last session: {data_date}"
-            status_note = "Market closed — will update when trading resumes"
+        if is_stale and current_session != "closed":
+            data_label = f"Showing {data_date} (last session) — re-analyze for live {session_name.lower()} data"
         elif is_stale:
-            status_icon = "\U0001f7e1"
-            status_text = f"Last session: {data_date}"
-            status_note = f"{session_name} active — re-analyze for live data"
+            data_label = f"Showing {data_date} (last session) — market resumes Mon 1:00 AM PT"
         elif last_bar_time:
-            status_icon = "\U0001f7e2"
-            status_text = f"Live through {last_bar_time} PT"
-            status_note = "Auto-refreshes every 5 min"
+            data_label = f"Live data through {last_bar_time} PT"
         else:
-            status_icon = "\U0001f7e2"
-            status_text = "Live"
-            status_note = "Auto-refreshes every 5 min"
+            data_label = "Live data"
 
         st.markdown(
-            f"<div style='background:#0d1117;border:1px solid #30363d;border-radius:8px;"
-            f"padding:12px 16px;margin:16px 0 8px 0'>"
+            f"<div style='background:linear-gradient(135deg, #0d1117 0%, #161b22 100%);"
+            f"border:2px solid {session_color};border-radius:12px;"
+            f"padding:20px 24px;margin:20px 0 16px 0'>"
             f"<div style='display:flex;align-items:center;justify-content:space-between;"
-            f"flex-wrap:wrap;gap:8px'>"
+            f"flex-wrap:wrap;gap:12px;margin-bottom:12px'>"
+            f"<div style='display:flex;align-items:center;gap:12px'>"
+            f"<span style='font-size:1.4em'>\U0001f4c8</span>"
             f"<div>"
-            f"<span style='font-size:1.05em;font-weight:700'>"
-            f"\U0001f4c8 Intraday Rating Timeline</span>"
-            f"&nbsp;&nbsp;<span style='background:{session_color};color:#fff;padding:2px 8px;"
-            f"border-radius:4px;font-size:0.7em;font-weight:600'>{session_name}</span>"
-            f"</div>"
-            f"<div style='text-align:right'>"
-            f"<div style='background:#1a1f29;border:1px solid #30363d;padding:4px 10px;"
-            f"border-radius:6px;font-size:0.8em;color:#8b949e'>"
-            f"{status_icon} {status_text}</div>"
+            f"<div style='font-size:1.2em;font-weight:800;color:#e6edf3'>"
+            f"Intraday Rating Timeline</div>"
+            f"<div style='font-size:0.8em;color:#8b949e;margin-top:2px'>"
+            f"5-minute intervals • Pre-market, regular & after-hours</div>"
             f"</div></div>"
-            f"<div style='display:flex;justify-content:space-between;flex-wrap:wrap;"
-            f"margin-top:4px'>"
-            f"<span style='font-size:0.75em;color:#6e7681'>"
-            f"5-minute intervals • Includes pre-market & after-hours • {status_note}</span>"
-            f"<span style='font-size:0.75em;color:#6e7681'>"
-            f"\U0001f552 {now_str}</span>"
+            f"<div style='background:{session_color};color:#fff;padding:8px 16px;"
+            f"border-radius:8px;font-size:1em;font-weight:800;"
+            f"letter-spacing:1px;text-align:center;min-width:160px'>"
+            f"{session_dot} {session_name}</div>"
             f"</div>"
+            f"<div style='display:flex;justify-content:space-between;align-items:center;"
+            f"flex-wrap:wrap;gap:8px;padding-top:10px;border-top:1px solid #30363d'>"
+            f"<div style='font-size:0.85em;color:#8b949e'>{data_label}</div>"
+            f"<div style='background:#1a1f29;border:1px solid #30363d;padding:6px 14px;"
+            f"border-radius:8px;font-size:0.9em;font-weight:600;color:#e6edf3'>"
+            f"\U0001f552 {now_str} PT</div>"
+            f"</div>"
+            f"<div style='font-size:0.7em;color:#484f58;margin-top:6px;text-align:right'>"
+            f"Auto-refreshes every 5 minutes</div>"
             f"</div>",
             unsafe_allow_html=True)
 
         display_snaps = intra_days[-12:]
 
-        if len(display_snaps) >= 2:
-            latest = display_snaps[-1]
-            first = display_snaps[0]
+        latest = display_snaps[-1] if display_snaps else None
+        first = display_snaps[0] if display_snaps else None
+
+        if latest and first and len(display_snaps) >= 2:
             total_diff = latest["score"] - first["score"]
             d_color = "#3fb950" if total_diff > 0 else "#f85149" if total_diff < 0 else "#8b949e"
             d_arrow = "+" if total_diff > 0 else ""
             rc_latest = RATING_COLORS.get(latest["rating"], "#757575")
+            latest_session = latest.get("session", "regular")
+
+            if is_stale:
+                score_label = "CLOSING SCORE"
+                change_label = "SESSION CHANGE"
+                price_label = "CLOSING PRICE"
+            elif latest_session == "pre-market":
+                score_label = "PRE-MARKET SCORE"
+                change_label = "PRE-MARKET CHANGE"
+                price_label = "PRE-MARKET PRICE"
+            elif latest_session == "after-hours":
+                score_label = "AFTER-HOURS SCORE"
+                change_label = "AFTER-HOURS CHANGE"
+                price_label = "AFTER-HOURS PRICE"
+            else:
+                score_label = "LIVE SCORE"
+                change_label = "SESSION CHANGE"
+                price_label = "LIVE PRICE"
+
             st.markdown(
-                f"<div style='display:flex;gap:12px;margin:8px 0 12px 0'>"
-                f"<div style='background:#161b22;border:1px solid #30363d;border-radius:8px;"
-                f"padding:10px 16px;flex:1;text-align:center'>"
-                f"<div style='font-size:0.7em;color:#8b949e;text-transform:uppercase;"
-                f"letter-spacing:0.5px'>{'Last Close Score' if is_stale else 'Current Score'}</div>"
-                f"<div style='font-size:1.6em;font-weight:800;color:{rc_latest}'>"
-                f"{latest['score']:.0f}</div>"
-                f"<div style='font-size:0.75em;color:#8b949e'>{latest['rating']}</div></div>"
-                f"<div style='background:#161b22;border:1px solid #30363d;border-radius:8px;"
-                f"padding:10px 16px;flex:1;text-align:center'>"
-                f"<div style='font-size:0.7em;color:#8b949e;text-transform:uppercase;"
-                f"letter-spacing:0.5px'>{'Final Hour Change' if is_stale else 'Hour Change'}</div>"
-                f"<div style='font-size:1.6em;font-weight:800;color:{d_color}'>"
-                f"{d_arrow}{total_diff:.1f}</div>"
-                f"<div style='font-size:0.75em;color:#8b949e'>"
+                f"<div style='display:flex;gap:12px;margin:12px 0 16px 0'>"
+                f"<div style='background:#161b22;border:1px solid #30363d;border-radius:10px;"
+                f"padding:14px 16px;flex:1;text-align:center'>"
+                f"<div style='font-size:0.65em;color:#8b949e;text-transform:uppercase;"
+                f"letter-spacing:1px;font-weight:600'>{score_label}</div>"
+                f"<div style='font-size:2em;font-weight:800;color:{rc_latest};"
+                f"margin:4px 0'>{latest['score']:.0f}</div>"
+                f"<div style='font-size:0.8em;color:#8b949e'>{latest['rating']}</div>"
+                f"<div style='font-size:0.7em;color:#484f58;margin-top:4px'>"
+                f"as of {latest['date']}</div></div>"
+                f"<div style='background:#161b22;border:1px solid #30363d;border-radius:10px;"
+                f"padding:14px 16px;flex:1;text-align:center'>"
+                f"<div style='font-size:0.65em;color:#8b949e;text-transform:uppercase;"
+                f"letter-spacing:1px;font-weight:600'>{change_label}</div>"
+                f"<div style='font-size:2em;font-weight:800;color:{d_color};"
+                f"margin:4px 0'>{d_arrow}{total_diff:.1f}</div>"
+                f"<div style='font-size:0.8em;color:#8b949e'>"
                 f"{first['date']} → {latest['date']}</div></div>"
-                f"<div style='background:#161b22;border:1px solid #30363d;border-radius:8px;"
-                f"padding:10px 16px;flex:1;text-align:center'>"
-                f"<div style='font-size:0.7em;color:#8b949e;text-transform:uppercase;"
-                f"letter-spacing:0.5px'>{'Last Price' if is_stale else 'Price'}</div>"
-                f"<div style='font-size:1.6em;font-weight:800'>"
-                f"${latest.get('price', 0):.2f}</div>"
-                f"<div style='font-size:0.75em;color:#8b949e'>"
+                f"<div style='background:#161b22;border:1px solid #30363d;border-radius:10px;"
+                f"padding:14px 16px;flex:1;text-align:center'>"
+                f"<div style='font-size:0.65em;color:#8b949e;text-transform:uppercase;"
+                f"letter-spacing:1px;font-weight:600'>{price_label}</div>"
+                f"<div style='font-size:2em;font-weight:800;"
+                f"margin:4px 0'>${latest.get('price', 0):.2f}</div>"
+                f"<div style='font-size:0.8em;color:#8b949e'>"
                 f"RSI {latest.get('rsi', 0):.0f}</div></div>"
                 f"</div>",
+                unsafe_allow_html=True)
+        elif latest:
+            rc_latest = RATING_COLORS.get(latest["rating"], "#757575")
+            st.markdown(
+                f"<div style='background:#161b22;border:1px solid #30363d;border-radius:10px;"
+                f"padding:14px 16px;margin:12px 0 16px 0;text-align:center'>"
+                f"<div style='font-size:0.65em;color:#8b949e;text-transform:uppercase;"
+                f"letter-spacing:1px;font-weight:600'>LATEST SCORE</div>"
+                f"<div style='font-size:2em;font-weight:800;color:{rc_latest};"
+                f"margin:4px 0'>{latest['score']:.0f} {latest['rating']}</div>"
+                f"<div style='font-size:0.85em;color:#8b949e'>"
+                f"${latest.get('price', 0):.2f} &bull; RSI {latest.get('rsi', 0):.0f}"
+                f" &bull; {latest['date']}</div></div>",
                 unsafe_allow_html=True)
 
         for i, snap in enumerate(display_snaps):
@@ -774,15 +807,21 @@ def render_rating_history(result):
     elif not intraday:
         pt = ZoneInfo("America/Los_Angeles")
         now_pt = datetime.now(pt)
-        now_str = now_pt.strftime("%a %b %d, %I:%M %p PT").replace(" 0", " ").lstrip("0")
+        now_str = now_pt.strftime("%a %b %d, %I:%M %p").replace(" 0", " ").lstrip("0")
         st.markdown(
-            f"<div style='background:#161b22;border:1px solid #30363d;border-radius:8px;"
-            f"padding:16px;margin:16px 0;text-align:center;color:#8b949e'>"
-            f"<div style='font-size:1.2em;margin-bottom:4px'>No intraday data available</div>"
-            f"<div style='font-size:0.85em'>Market is closed. Data refreshes automatically "
-            f"during extended hours (1:00 AM — 5:00 PM PT)</div>"
-            f"<div style='font-size:0.75em;margin-top:6px;color:#6e7681'>"
-            f"\U0001f552 Current time: {now_str}</div></div>",
+            f"<div style='background:linear-gradient(135deg, #0d1117 0%, #161b22 100%);"
+            f"border:2px solid #f85149;border-radius:12px;"
+            f"padding:20px 24px;margin:20px 0;text-align:center'>"
+            f"<div style='font-size:1.3em;font-weight:700;color:#e6edf3;margin-bottom:8px'>"
+            f"\U0001f534 MARKET CLOSED</div>"
+            f"<div style='font-size:0.9em;color:#8b949e'>No intraday data available right now</div>"
+            f"<div style='font-size:0.85em;color:#6e7681;margin-top:8px'>"
+            f"Extended hours: 1:00 AM — 5:00 PM PT (Mon-Fri)</div>"
+            f"<div style='background:#1a1f29;border:1px solid #30363d;padding:6px 14px;"
+            f"border-radius:8px;display:inline-block;margin-top:10px;"
+            f"font-size:0.9em;font-weight:600;color:#e6edf3'>"
+            f"\U0001f552 {now_str} PT</div>"
+            f"</div>",
             unsafe_allow_html=True)
 
     with st.expander("Day-by-Day Breakdown", expanded=False):
