@@ -550,28 +550,52 @@ def render_rating_history(result):
 
     if intra_days:
         date_part = data_date if data_date else "Today"
-        if last_bar_time:
-            freshness = f"Market data through {last_bar_time} ET"
-        elif fetched_at:
-            freshness = f"Fetched at {fetched_at}"
+        now = datetime.now()
+        now_str = now.strftime("%a %b %d, %I:%M %p").replace(" 0", " ").lstrip("0")
+        today_str = now.strftime("%a %b %d").replace(" 0", " ")
+        is_stale = (data_date and data_date != today_str)
+        market_open = (now.weekday() < 5 and 9 * 60 + 30 <= now.hour * 60 + now.minute <= 16 * 60)
+
+        if is_stale:
+            if market_open:
+                status_icon = "\U0001f7e1"
+                status_text = f"Last session: {data_date}"
+                status_note = "Market is open — re-analyze for live data"
+            else:
+                status_icon = "\U0001f534"
+                status_text = f"Last session: {data_date}"
+                status_note = "Market closed — will update when trading resumes"
         else:
-            freshness = ""
+            if last_bar_time:
+                status_icon = "\U0001f7e2"
+                status_text = f"Live through {last_bar_time} ET"
+                status_note = "Auto-refreshes every 5 min"
+            else:
+                status_icon = "\U0001f7e2"
+                status_text = "Live"
+                status_note = "Auto-refreshes every 5 min"
 
         st.markdown(
             f"<div style='background:#0d1117;border:1px solid #30363d;border-radius:8px;"
             f"padding:12px 16px;margin:16px 0 8px 0'>"
-            f"<div style='display:flex;align-items:center;justify-content:space-between'>"
+            f"<div style='display:flex;align-items:center;justify-content:space-between;"
+            f"flex-wrap:wrap;gap:8px'>"
             f"<div>"
             f"<span style='font-size:1.05em;font-weight:700'>"
-            f"\U0001f4c8 {date_part} — Intraday Rating Timeline</span>"
+            f"\U0001f4c8 Intraday Rating Timeline</span>"
             f"</div>"
-            f"<div>"
-            f"<span style='background:#1a1f29;border:1px solid #30363d;padding:4px 10px;"
+            f"<div style='text-align:right'>"
+            f"<div style='background:#1a1f29;border:1px solid #30363d;padding:4px 10px;"
             f"border-radius:6px;font-size:0.8em;color:#8b949e'>"
-            f"\U0001f7e2 {freshness}</span>"
+            f"{status_icon} {status_text}</div>"
             f"</div></div>"
-            f"<div style='font-size:0.75em;color:#6e7681;margin-top:4px'>"
-            f"5-minute intervals from the last hour • Auto-refreshes every 5 min</div>"
+            f"<div style='display:flex;justify-content:space-between;flex-wrap:wrap;"
+            f"margin-top:4px'>"
+            f"<span style='font-size:0.75em;color:#6e7681'>"
+            f"5-minute intervals from the last hour • {status_note}</span>"
+            f"<span style='font-size:0.75em;color:#6e7681'>"
+            f"\U0001f552 Now: {now_str} ET</span>"
+            f"</div>"
             f"</div>",
             unsafe_allow_html=True)
 
@@ -589,14 +613,14 @@ def render_rating_history(result):
                 f"<div style='background:#161b22;border:1px solid #30363d;border-radius:8px;"
                 f"padding:10px 16px;flex:1;text-align:center'>"
                 f"<div style='font-size:0.7em;color:#8b949e;text-transform:uppercase;"
-                f"letter-spacing:0.5px'>Current Score</div>"
+                f"letter-spacing:0.5px'>{'Last Close Score' if is_stale else 'Current Score'}</div>"
                 f"<div style='font-size:1.6em;font-weight:800;color:{rc_latest}'>"
                 f"{latest['score']:.0f}</div>"
                 f"<div style='font-size:0.75em;color:#8b949e'>{latest['rating']}</div></div>"
                 f"<div style='background:#161b22;border:1px solid #30363d;border-radius:8px;"
                 f"padding:10px 16px;flex:1;text-align:center'>"
                 f"<div style='font-size:0.7em;color:#8b949e;text-transform:uppercase;"
-                f"letter-spacing:0.5px'>Hour Change</div>"
+                f"letter-spacing:0.5px'>{'Final Hour Change' if is_stale else 'Hour Change'}</div>"
                 f"<div style='font-size:1.6em;font-weight:800;color:{d_color}'>"
                 f"{d_arrow}{total_diff:.1f}</div>"
                 f"<div style='font-size:0.75em;color:#8b949e'>"
@@ -604,7 +628,7 @@ def render_rating_history(result):
                 f"<div style='background:#161b22;border:1px solid #30363d;border-radius:8px;"
                 f"padding:10px 16px;flex:1;text-align:center'>"
                 f"<div style='font-size:0.7em;color:#8b949e;text-transform:uppercase;"
-                f"letter-spacing:0.5px'>Price</div>"
+                f"letter-spacing:0.5px'>{'Last Price' if is_stale else 'Price'}</div>"
                 f"<div style='font-size:1.6em;font-weight:800'>"
                 f"${latest.get('price', 0):.2f}</div>"
                 f"<div style='font-size:0.75em;color:#8b949e'>"
@@ -713,12 +737,16 @@ def render_rating_history(result):
                 f"</div>",
                 unsafe_allow_html=True)
     elif not intraday:
+        now = datetime.now()
+        now_str = now.strftime("%a %b %d, %I:%M %p").replace(" 0", " ").lstrip("0")
         st.markdown(
-            "<div style='background:#161b22;border:1px solid #30363d;border-radius:8px;"
-            "padding:16px;margin:16px 0;text-align:center;color:#8b949e'>"
-            "<div style='font-size:1.2em;margin-bottom:4px'>No intraday data available</div>"
-            "<div style='font-size:0.85em'>Market may be closed. Data refreshes automatically "
-            "during trading hours (9:30 AM — 4:00 PM ET)</div></div>",
+            f"<div style='background:#161b22;border:1px solid #30363d;border-radius:8px;"
+            f"padding:16px;margin:16px 0;text-align:center;color:#8b949e'>"
+            f"<div style='font-size:1.2em;margin-bottom:4px'>No intraday data available</div>"
+            f"<div style='font-size:0.85em'>Market is closed. Data refreshes automatically "
+            f"during trading hours (9:30 AM — 4:00 PM ET)</div>"
+            f"<div style='font-size:0.75em;margin-top:6px;color:#6e7681'>"
+            f"\U0001f552 Current time: {now_str} ET</div></div>",
             unsafe_allow_html=True)
 
     with st.expander("Day-by-Day Breakdown", expanded=False):
