@@ -3,6 +3,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 from datetime import date, datetime
+from streamlit_autorefresh import st_autorefresh
 from analysis import (
     analyze_ticker, load_positions, save_positions,
     add_position, remove_position, update_position,
@@ -15,6 +16,8 @@ from analysis import (
 
 st.set_page_config(page_title="TalicoTrading", page_icon="\U0001f4ca",
                    layout="wide", initial_sidebar_state="expanded")
+
+st_autorefresh(interval=5 * 60 * 1000, limit=100, key="auto_refresh")
 
 st.markdown("""
 <style>
@@ -480,6 +483,7 @@ def render_rating_history(result):
     intraday = result.get("intraday_scores", [])
     fetched_at = result.get("fetched_at", "")
     data_date = result.get("data_date", "")
+    last_bar_time = result.get("last_bar_time", "")
     if not history and not intraday:
         st.caption("Not enough data for rating history.")
         return
@@ -546,13 +550,68 @@ def render_rating_history(result):
 
     if intra_days:
         date_part = data_date if data_date else "Today"
-        time_part = f" — fetched {fetched_at}" if fetched_at else ""
+        if last_bar_time:
+            freshness = f"Market data through {last_bar_time} ET"
+        elif fetched_at:
+            freshness = f"Fetched at {fetched_at}"
+        else:
+            freshness = ""
+
         st.markdown(
-            f'<p class="section-header">{date_part} — Last Hour (5-min intervals)'
-            f'<span style="font-weight:400;font-size:0.75em;opacity:0.6">{time_part}</span></p>',
+            f"<div style='background:#0d1117;border:1px solid #30363d;border-radius:8px;"
+            f"padding:12px 16px;margin:16px 0 8px 0'>"
+            f"<div style='display:flex;align-items:center;justify-content:space-between'>"
+            f"<div>"
+            f"<span style='font-size:1.05em;font-weight:700'>"
+            f"\U0001f4c8 {date_part} — Intraday Rating Timeline</span>"
+            f"</div>"
+            f"<div>"
+            f"<span style='background:#1a1f29;border:1px solid #30363d;padding:4px 10px;"
+            f"border-radius:6px;font-size:0.8em;color:#8b949e'>"
+            f"\U0001f7e2 {freshness}</span>"
+            f"</div></div>"
+            f"<div style='font-size:0.75em;color:#6e7681;margin-top:4px'>"
+            f"5-minute intervals from the last hour • Auto-refreshes every 5 min</div>"
+            f"</div>",
             unsafe_allow_html=True)
 
         display_snaps = intra_days[-12:]
+
+        if len(display_snaps) >= 2:
+            latest = display_snaps[-1]
+            first = display_snaps[0]
+            total_diff = latest["score"] - first["score"]
+            d_color = "#3fb950" if total_diff > 0 else "#f85149" if total_diff < 0 else "#8b949e"
+            d_arrow = "+" if total_diff > 0 else ""
+            rc_latest = RATING_COLORS.get(latest["rating"], "#757575")
+            st.markdown(
+                f"<div style='display:flex;gap:12px;margin:8px 0 12px 0'>"
+                f"<div style='background:#161b22;border:1px solid #30363d;border-radius:8px;"
+                f"padding:10px 16px;flex:1;text-align:center'>"
+                f"<div style='font-size:0.7em;color:#8b949e;text-transform:uppercase;"
+                f"letter-spacing:0.5px'>Current Score</div>"
+                f"<div style='font-size:1.6em;font-weight:800;color:{rc_latest}'>"
+                f"{latest['score']:.0f}</div>"
+                f"<div style='font-size:0.75em;color:#8b949e'>{latest['rating']}</div></div>"
+                f"<div style='background:#161b22;border:1px solid #30363d;border-radius:8px;"
+                f"padding:10px 16px;flex:1;text-align:center'>"
+                f"<div style='font-size:0.7em;color:#8b949e;text-transform:uppercase;"
+                f"letter-spacing:0.5px'>Hour Change</div>"
+                f"<div style='font-size:1.6em;font-weight:800;color:{d_color}'>"
+                f"{d_arrow}{total_diff:.1f}</div>"
+                f"<div style='font-size:0.75em;color:#8b949e'>"
+                f"{first['date']} → {latest['date']}</div></div>"
+                f"<div style='background:#161b22;border:1px solid #30363d;border-radius:8px;"
+                f"padding:10px 16px;flex:1;text-align:center'>"
+                f"<div style='font-size:0.7em;color:#8b949e;text-transform:uppercase;"
+                f"letter-spacing:0.5px'>Price</div>"
+                f"<div style='font-size:1.6em;font-weight:800'>"
+                f"${latest.get('price', 0):.2f}</div>"
+                f"<div style='font-size:0.75em;color:#8b949e'>"
+                f"RSI {latest.get('rsi', 0):.0f}</div></div>"
+                f"</div>",
+                unsafe_allow_html=True)
+
         for i, snap in enumerate(display_snaps):
             rc = RATING_COLORS.get(snap["rating"], "#757575")
             is_latest = (i == len(display_snaps) - 1)
@@ -561,64 +620,106 @@ def render_rating_history(result):
             diff = snap["score"] - prev_snap["score"] if prev_snap else 0
 
             if is_latest:
-                border_style = "border-left:4px solid #fff"
+                border_color = "#58a6ff"
+                bg = "#0d1117"
+                border_w = "2px"
             elif diff > 0.5:
-                border_style = "border-left:4px solid #00c853"
+                border_color = "#3fb950"
+                bg = "#161b22"
+                border_w = "1px"
             elif diff < -0.5:
-                border_style = "border-left:4px solid #ff5252"
+                border_color = "#f85149"
+                bg = "#161b22"
+                border_w = "1px"
             else:
-                border_style = "border-left:4px solid #555"
+                border_color = "#30363d"
+                bg = "#161b22"
+                border_w = "1px"
 
-            diff_badge = ""
+            diff_html = ""
             if i > 0:
                 if abs(diff) >= 0.5:
-                    d_color = "#00c853" if diff > 0 else "#ff5252"
-                    d_arrow = "+" if diff > 0 else ""
-                    diff_badge = (f"<span style='color:{d_color};font-weight:700;"
-                                  f"font-size:0.85em;margin-left:8px'>{d_arrow}{diff:.1f}</span>")
+                    d_color = "#3fb950" if diff > 0 else "#f85149"
+                    d_prefix = "+" if diff > 0 else ""
+                    diff_html = (f"<span style='color:{d_color};font-weight:700;"
+                                 f"font-size:0.85em;margin-left:8px'>{d_prefix}{diff:.1f}</span>")
                 else:
-                    diff_badge = "<span style='color:#666;font-size:0.8em;margin-left:8px'>—</span>"
+                    diff_html = "<span style='color:#484f58;font-size:0.8em;margin-left:8px'>±0</span>"
 
             reason_html = ""
             if chg and isinstance(chg, dict) and chg.get("details"):
-                reasons = []
-                for d in chg["details"][:2]:
-                    clr = "#4caf50" if d["delta"] > 0 else "#ef5350"
+                rows = []
+                for d in chg["details"][:4]:
+                    clr = "#3fb950" if d["delta"] > 0 else "#f85149"
                     arrow = "▲" if d["delta"] > 0 else "▼"
-                    reasons.append(
-                        f"<span style='color:{clr}'>{arrow}</span> "
-                        f"<strong>{d['label']}</strong> {d['delta']:+.0f}")
+                    reasoning = d.get("reasoning", d.get("text", ""))
+                    short_reason = ""
+                    if reasoning and " — " in reasoning:
+                        short_reason = reasoning.split(" — ", 1)[1]
+                    elif reasoning and "(" in reasoning:
+                        short_reason = reasoning
+                    if short_reason:
+                        rows.append(
+                            f"<div style='margin:2px 0;display:flex;align-items:baseline;gap:6px'>"
+                            f"<span style='color:{clr};font-weight:700;min-width:14px'>{arrow}</span>"
+                            f"<span style='font-weight:600'>{d['label']}</span>"
+                            f"<span style='color:{clr};font-weight:600'>{d['delta']:+.0f}</span>"
+                            f"<span style='color:#6e7681;font-size:0.9em'>— {short_reason}</span>"
+                            f"</div>")
+                    else:
+                        rows.append(
+                            f"<div style='margin:2px 0;display:flex;align-items:baseline;gap:6px'>"
+                            f"<span style='color:{clr};font-weight:700;min-width:14px'>{arrow}</span>"
+                            f"<span style='font-weight:600'>{d['label']}</span>"
+                            f"<span style='color:{clr};font-weight:600'>{d['delta']:+.0f}</span>"
+                            f"</div>")
                 reason_html = (
-                    f"<div style='font-size:0.78em;color:#aaa;margin-top:3px;padding-left:2px'>"
-                    f"{'&nbsp;&nbsp;·&nbsp;&nbsp;'.join(reasons)}</div>")
+                    f"<div style='font-size:0.78em;color:#c9d1d9;margin-top:6px;"
+                    f"padding:6px 8px;background:#0d1117;border-radius:4px;"
+                    f"border-left:2px solid #30363d'>"
+                    f"{''.join(rows)}</div>")
             elif i == 0:
-                reason_html = "<div style='font-size:0.75em;color:#555;margin-top:3px'>Baseline</div>"
+                reason_html = (
+                    "<div style='font-size:0.75em;color:#484f58;margin-top:4px;"
+                    "padding:4px 8px'>Baseline snapshot</div>")
             elif chg is None:
-                reason_html = "<div style='font-size:0.75em;color:#555;margin-top:3px'>No change</div>"
+                reason_html = (
+                    "<div style='font-size:0.75em;color:#484f58;margin-top:4px;"
+                    "padding:4px 8px'>No significant component changes</div>")
 
             price_str = f"${snap.get('price', 0):.2f}" if snap.get("price") else ""
             rsi_str = f"RSI {snap.get('rsi', 0):.0f}" if snap.get("rsi") else ""
-            meta = f"<span style='opacity:0.5;font-size:0.8em'>{price_str}&nbsp;&nbsp;{rsi_str}</span>" if price_str else ""
+            meta = f"<span style='color:#8b949e;font-size:0.8em'>{price_str}&nbsp;&nbsp;{rsi_str}</span>" if price_str else ""
 
-            latest_tag = " <span style='background:#fff;color:#000;padding:1px 6px;border-radius:4px;font-size:0.7em;font-weight:700;margin-left:6px'>LATEST</span>" if is_latest else ""
+            latest_tag = (" <span style='background:#58a6ff;color:#0d1117;padding:2px 8px;"
+                         "border-radius:4px;font-size:0.65em;font-weight:700;"
+                         "margin-left:8px;letter-spacing:0.5px'>LIVE</span>") if is_latest else ""
 
             st.markdown(
-                f"<div style='background:#161b22;{border_style};border-radius:6px;"
-                f"padding:8px 12px;margin-bottom:4px'>"
+                f"<div style='background:{bg};border:{border_w} solid {border_color};"
+                f"border-radius:8px;padding:10px 14px;margin-bottom:6px'>"
                 f"<div style='display:flex;align-items:center;justify-content:space-between'>"
-                f"<div>"
-                f"<span style='font-weight:700;font-size:0.9em'>{snap['date']}</span>"
+                f"<div style='display:flex;align-items:center;gap:8px'>"
+                f"<span style='font-weight:700;font-size:0.95em;color:#e6edf3'>{snap['date']}</span>"
                 f"{latest_tag}"
-                f"&nbsp;&nbsp;<span style='background:{rc};color:#000;padding:2px 8px;"
-                f"border-radius:4px;font-weight:700;font-size:0.8em'>"
+                f"<span style='background:{rc};color:#000;padding:3px 10px;"
+                f"border-radius:6px;font-weight:700;font-size:0.8em'>"
                 f"{snap['score']:.0f} {snap['rating']}</span>"
-                f"{diff_badge}"
+                f"{diff_html}"
                 f"</div>"
                 f"<div>{meta}</div>"
                 f"</div>"
                 f"{reason_html}"
                 f"</div>",
                 unsafe_allow_html=True)
+    elif not intraday:
+        st.markdown(
+            "<div style='background:#161b22;border:1px solid #30363d;border-radius:8px;"
+            "padding:16px;margin:16px 0;text-align:center;color:#8b949e'>"
+            "<div style='font-size:1.2em;margin-bottom:4px'>No intraday data available</div>"
+            "<div style='font-size:0.85em'>Market may be closed. Data refreshes automatically "
+            "during trading hours (9:30 AM — 4:00 PM ET)</div></div>",
+            unsafe_allow_html=True)
 
     with st.expander("Day-by-Day Breakdown", expanded=False):
         for day in hist_days:

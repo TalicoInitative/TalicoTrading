@@ -1015,7 +1015,8 @@ def explain_intraday_change(prev_snap, curr_snap):
         text = f"{d['label']} {arrow} ({d['prev_score']:.0f}→{d['curr_score']:.0f}, {d['delta']:+.0f})"
         if d["reasoning"]:
             text += f" — {d['reasoning']}"
-        detail_list.append({"text": text, "delta": d["delta"], "label": d["label"]})
+        detail_list.append({"text": text, "delta": d["delta"], "label": d["label"],
+                           "reasoning": d["reasoning"]})
 
     return {"summary": summary, "details": detail_list}
 
@@ -1128,7 +1129,10 @@ def compute_intraday_scores(ticker: str, sentiment, analyst_data=None, rs_data=N
             scores[0]["change"] = None
 
         fetched_at = datetime.now().strftime("%H:%M:%S")
-        return {"snapshots": scores, "fetched_at": fetched_at, "data_date": data_date_label}
+        last_bar_ts = today_bars[-1]
+        last_bar_time = last_bar_ts.strftime("%I:%M %p").lstrip("0") if hasattr(last_bar_ts, 'strftime') else ""
+        return {"snapshots": scores, "fetched_at": fetched_at, "data_date": data_date_label,
+                "last_bar_time": last_bar_time}
     except Exception:
         return {"snapshots": [], "fetched_at": datetime.now().strftime("%H:%M:%S"), "data_date": ""}
 
@@ -1512,6 +1516,7 @@ def analyze_ticker(ticker: str, period: str = "6mo") -> dict:
             "intraday_scores": intraday_result.get("snapshots", []),
             "fetched_at": intraday_result.get("fetched_at", datetime.now().strftime("%H:%M:%S")),
             "data_date": intraday_result.get("data_date", ""),
+            "last_bar_time": intraday_result.get("last_bar_time", ""),
             "analyst": analyst,
             "insider": insider,
             "earnings": earnings,

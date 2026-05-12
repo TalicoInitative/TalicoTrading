@@ -6,3 +6,4 @@ plotly>=6.0.0
 pandas>=2.2.0
 numpy>=2.0.0
 lxml>=5.0.0
+streamlit-autorefresh>=1.0.1
